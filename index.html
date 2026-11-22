@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>מתן לומד</title>
+<style>
+  :root{--bg:#0d0f1a;--card:#171a2b;--line:#2a2f4a;--text:#eef0ff;--muted:#9aa0c3;--accent:#7c5cff;--accent2:#22d3ee}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;background:radial-gradient(circle at 20% 0,#1d1640,var(--bg) 60%);color:var(--text);font-family:system-ui,"Segoe UI",Arial,sans-serif}
+  .app{max-width:760px;margin:0 auto;padding:16px;transition:.25s}
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+  h1{margin:0;font-size:1.5rem;background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;color:transparent}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;margin-bottom:12px}
+  textarea,input{width:100%;background:#0f1222;border:1px solid var(--line);color:var(--text);border-radius:12px;padding:12px;font:inherit;resize:vertical}
+  textarea{min-height:110px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  button{border:0;border-radius:12px;padding:10px 16px;font:inherit;font-weight:600;cursor:pointer;color:#fff;background:var(--accent)}
+  button.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+  button:disabled{opacity:.5;cursor:wait}
+  .answer{white-space:pre-wrap;line-height:1.7}
+  .muted{color:var(--muted);font-size:.9rem}
+  .preview{max-height:140px;border-radius:10px;margin-top:8px;display:none}
+  .hist-item{cursor:pointer;padding:8px;border-radius:8px;border-bottom:1px solid var(--line)}
+  .hist-item:hover{background:#1f2340}
+  .hidden{display:none!important}
+  /* מזעור */
+  body.min .app{display:none}
+  #restore{position:fixed;bottom:16px;left:16px;width:52px;height:52px;border-radius:50%;font-size:1.4rem;box-shadow:0 6px 20px #0008}
+</style>
+</head>
+<body>
+<button id="restore" class="hidden" title="פתח">📚</button>
+
+<div class="app">
+  <header>
+    <h1>📚 מתן לומד</h1>
+    <button class="ghost" id="minBtn" title="מזעור">➖ מזעור</button>
+  </header>
+
+  <div class="card" id="loginCard">
+    <div class="muted">סיסמה</div>
+    <input type="password" id="pw" placeholder="הכנס סיסמה">
+    <div class="row"><button id="loginBtn">כניסה</button></div>
+  </div>
+
+  <div id="main" class="hidden">
+    <div class="card">
+      <textarea id="q" placeholder="כתוב או הדבק שאלה... (Ctrl+Enter לשליחה)"></textarea>
+      <img id="prev" class="preview" alt="">
+      <div class="row">
+        <button id="askBtn">⚡ תשובה</button>
+        <button id="explainBtn" class="ghost">🧠 תסביר לי</button>
+        <label class="ghost" style="padding:10px 16px;border:1px solid var(--line);border-radius:12px;cursor:pointer">📷 תמונה
+          <input type="file" id="file" accept="image/*" class="hidden"></label>
+        <button id="clearBtn" class="ghost">🗑️ נקה</button>
+      </div>
+    </div>
+
+    <div class="card hidden" id="ansCard">
+      <div class="answer" id="ans"></div>
+      <div class="row">
+        <button class="ghost" id="moreBtn">🧠 תסביר לי את זה</button>
+        <button class="ghost" id="copyBtn">📋 העתק</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="muted">היסטוריה</div>
+      <div id="hist"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const store = {
+  get(k, d){ try{ return JSON.parse(localStorage.getItem(k)) ?? d }catch{ return d } },
+  set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)) }catch{} }
+};
+let password = store.get("pw", "");
+let image = null, last = null;
+
+function showMain(){ $("loginCard").classList.add("hidden"); $("main").classList.remove("hidden"); renderHist(); $("q").focus(); }
+if (password) showMain();
+
+$("loginBtn").onclick = () => { password = $("pw").value; store.set("pw", password); showMain(); };
+$("pw").onkeydown = e => { if (e.key === "Enter") $("loginBtn").click(); };
+
+// מזעור ושחזור
+function setMin(on){ document.body.classList.toggle("min", on); $("restore").classList.toggle("hidden", !on); }
+$("minBtn").onclick = () => setMin(true);
+$("restore").onclick = () => setMin(false);
+
+$("file").onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { image = r.result; $("prev").src = image; $("prev").style.display = "block"; };
+  r.readAsDataURL(f);
+};
+
+$("clearBtn").onclick = () => { $("q").value = ""; image = null; $("prev").style.display = "none"; $("ansCard").classList.add("hidden"); };
+
+async function ask(question, img, explain){
+  const btns = [$("askBtn"), $("explainBtn"), $("moreBtn")];
+  btns.forEach(b => b.disabled = true);
+  $("ansCard").classList.remove("hidden");
+  $("ans").textContent = explain ? "🧠 חושב על הסבר..." : "⚡ חושב...";
+  try{
+    const r = await fetch("/.netlify/functions/ask", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ password, question, image: img, explain })
+    });
+    const j = await r.json();
+    if (r.status === 401){ store.set("pw",""); location.reload(); return; }
+    $("ans").textContent = j.answer || ("❌ " + j.error);
+    if (j.answer){
+      last = { question, image: img };
+      const h = store.get("hist", []);
+      h.unshift({ q: question || "📷 תמונה", a: j.answer });
+      store.set("hist", h.slice(0, 30)); renderHist();
+    }
+  }catch{ $("ans").textContent = "❌ אין חיבור לשרת"; }
+  btns.forEach(b => b.disabled = false);
+}
+
+$("askBtn").onclick = () => ask($("q").value.trim(), image, false);
+$("explainBtn").onclick = () => ask($("q").value.trim(), image, true);
+$("moreBtn").onclick = () => last && ask(last.question, last.image, true);
+$("copyBtn").onclick = () => navigator.clipboard?.writeText($("ans").textContent);
+$("q").onkeydown = e => { if (e.key === "Enter" && e.ctrlKey) $("askBtn").click(); };
+
+function renderHist(){
+  const h = store.get("hist", []);
+  $("hist").innerHTML = h.length ? "" : '<div class="muted">עוד אין שאלות</div>';
+  h.forEach(it => {
+    const d = document.createElement("div"); d.className = "hist-item";
+    d.textContent = it.q.slice(0, 80);
+    d.onclick = () => { $("ansCard").classList.remove("hidden"); $("ans").textContent = it.a; $("q").value = it.q.startsWith("📷") ? "" : it.q; };
+    $("hist").appendChild(d);
+  });
+}
+</script>
+</body>
+</html>
