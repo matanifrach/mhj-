@@ -26,8 +26,9 @@ export default async (req) => {
   }
 
   const model = Netlify.env.get("GEMINI_MODEL") || "gemini-3.8-flash";
-  const post = (fast) =>
-    fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`, {
+  const fallback = Netlify.env.get("GEMINI_FALLBACK_MODEL");
+  const post = (fast, m = model) =>
+    fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:streamGenerateContent?alt=sse`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
@@ -39,6 +40,8 @@ export default async (req) => {
 
   let r = await post(!explain);
   if (!explain && r.status === 400) r = await post(false); // המודל לא תומך בהגדרת החשיבה
+  // המודל הראשי עמוס: עוברים מיד למודל הגיבוי (שגיאת עומס חוזרת מהר, אז זה לא מאט)
+  if ((r.status === 503 || r.status === 429) && fallback) r = await post(false, fallback);
 
   if (!r.ok) {
     const g = await r.json().catch(() => ({}));
