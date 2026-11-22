@@ -1,157 +1,131 @@
-// Edge Function: מזרים את התשובה מ-Gemini ישירות לדפדפן (Streaming).
-// ככה המילים מתחילות להופיע מהר, ואין מגבלת 10 השניות של Functions רגילות.
+// Edge Function: מזרים תשובות לדפדפן (Streaming).
+// סדר עדיפויות: Gemini (ראשי, כולל חיפוש Google מובנה) ← מודל Gemini קל יותר ← Groq (גיבוי אחרון).
 const json = (o, status = 200) =>
   new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
+const sse = (body, provider) =>
+  new Response(body, { headers: { "content-type": "text/event-stream", "x-provider": encodeURIComponent(provider) } });
 
-// בחירה אוטומטית של מודל Groq מתוך הרשימה שזמינה בפועל לחשבון (נשמר בזיכרון בין בקשות)
-let groqModelCache = null;
-async function pickGroqModel(key) {
-  if (groqModelCache) return groqModelCache;
-  const r = await fetch("https://api.groq.com/openai/v1/models", {
-    headers: { Authorization: `Bearer ${key}` },
-    signal: AbortSignal.timeout(5000),
-  });
-  if (!r.ok) return null;
-  const ids = ((await r.json()).data || [])
-    .filter((m) => m.active !== false)
-    .map((m) => m.id)
-    .filter((id) => !/whisper|tts|guard|audio|speech|embed|compound|vision|ocr/i.test(id));
-  // העדפה: מודלים גדולים (טובים יותר בעברית), אחר כך כל השאר
-  const score = (id) =>
-    (/120b|235b|405b|70b|maverick|kimi|qwen3/i.test(id) ? 0 : 1) + (/instant|8b|mini|small/i.test(id) ? 1 : 0);
-  ids.sort((a, b) => score(a) - score(b));
-  groqModelCache = ids[0] || null;
-  return groqModelCache;
+const RULES =
+  " כתוב אך ורק בעברית תקנית, בלי מילים בשפות אחרות חוץ ממספרים וסימנים מתמטיים." +
+  " כתוב טקסט פשוט: בלי LaTeX, בלי סימני דולר ובלי Markdown. לחישובים השתמש ב- × ÷ + − =.";
+const SYSTEM = {
+  answer:
+    "פתור את השאלה בקפידה, שלב אחרי שלב ובקצרה, ובדוק את עצמך (מי התחיל קודם, יחידות מידה, מלכודות היגיון). " +
+    "בסוף כתוב שורה נפרדת שמתחילה ב'תשובה:' ובה רק התשובה הסופית." + RULES,
+  explain:
+    "אתה מורה פרטי סבלני. הסבר את הפתרון שלב אחרי שלב בעברית פשוטה וברורה, ובדוק את החישוב. " +
+    "בסוף כתוב שורה נפרדת שמתחילה ב'תשובה:'." + RULES,
+  search:
+    "אתה עוזר מחקר זהיר. השתמש בחיפוש Google וענה רק לפי מה שהמקורות אומרים במפורש. " +
+    "ענה בקצרה. אם המקורות סותרים, ישנים או לא עונים במפורש על השאלה, כתוב זאת ואל תנחש. " +
+    "אם אין מידע אמין, כתוב: לא מצאתי מידע אמין. אל תמסור כתובת מגורים מדויקת של אנשים פרטיים." + RULES,
+};
+
+// מודל Gemini קל לגיבוי, נבחר מתוך רשימת המודלים שזמינים בפועל לחשבון
+let liteCache;
+async function pickLite(key, main) {
+  if (liteCache !== undefined) return liteCache;
+  const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", {
+    headers: { "x-goog-api-key": key }, signal: AbortSignal.timeout(4000),
+  }).catch(() => null);
+  if (!r?.ok) return null;
+  const names = ((await r.json()).models || [])
+    .filter((m) => (m.supportedGenerationMethods || []).includes("generateContent"))
+    .map((m) => m.name.replace("models/", ""))
+    .filter((n) => /flash/i.test(n) && n !== main && !/image|tts|audio|live|embed|preview|exp/i.test(n))
+    .sort((a, b) => (/lite/.test(b) - /lite/.test(a)) || b.localeCompare(a, "en", { numeric: true }));
+  return (liteCache = names[0] || null);
 }
 
-// בחירה אוטומטית של מודל חיפוש: קודם compound, אחרת מודל gpt-oss עם הכלי browser_search
-let searchCache = null;
-async function pickSearch(key) {
-  if (searchCache) return searchCache;
+let groqCache;
+async function pickGroq(key) {
+  if (groqCache) return groqCache;
   const r = await fetch("https://api.groq.com/openai/v1/models", {
-    headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(5000),
-  });
-  if (!r.ok) return { error: `לא הצלחתי לקבל את רשימת המודלים (קוד ${r.status})` };
-  const ids = ((await r.json()).data || []).filter((m) => m.active !== false).map((m) => m.id);
-  const compound = ids.filter((id) => /compound|search|browse/i.test(id)).sort((a, b) => /mini/.test(a) - /mini/.test(b));
-  if (compound.length) return (searchCache = { model: compound[0] });
-  const oss = ids.filter((id) => /gpt-oss/i.test(id)).sort((a, b) => /120b/.test(b) - /120b/.test(a));
-  if (oss.length) return (searchCache = { model: oss[0], tool: true });
-  return { error: "אין בחשבון מודל עם חיפוש. מודלים זמינים: " + ids.slice(0, 15).join(", ") };
+    headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(4000),
+  }).catch(() => null);
+  if (!r?.ok) return null;
+  const ids = ((await r.json()).data || []).filter((m) => m.active !== false).map((m) => m.id)
+    .filter((id) => !/whisper|tts|guard|audio|speech|embed|compound|vision|ocr/i.test(id));
+  const score = (id) => (/120b|235b|70b|maverick|kimi|qwen3/i.test(id) ? 0 : 1) + (/instant|8b|mini|small/i.test(id) ? 1 : 0);
+  return (groqCache = ids.sort((a, b) => score(a) - score(b))[0] || null);
 }
 
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
-  const { password, question, image, explain, check, noGroq, search } = await req.json().catch(() => ({}));
+  const { password, question, image, explain, check, search } = await req.json().catch(() => ({}));
   const pass = Netlify.env.get("APP_PASSWORD");
   if (!pass || password !== pass) return json({ error: "סיסמה שגויה" }, 401);
   if (check) return json({ ok: true });
-
-  const key = (Netlify.env.get("GEMINI_API_KEY") || "").trim();
-  if (!key) return json({ error: "חסר GEMINI_API_KEY ב-Netlify" }, 500);
   if (!question && !image) return json({ error: "אין שאלה" }, 400);
 
-  const system = explain
-    ? "אתה מורה פרטי סבלני. הסבר את הפתרון שלב אחרי שלב בעברית פשוטה וברורה, ובסוף כתוב את התשובה הסופית בשורה נפרדת שמתחילה ב'תשובה:'. כתוב אך ורק בעברית תקנית. אסור לשלב מילים בשפות אחרות (רוסית, גרמנית, אנגלית, סינית וכדומה), חוץ ממספרים וסימנים מתמטיים. בדוק את החישוב לפני שאתה עונה. כתוב טקסט פשוט בלבד: בלי LaTeX, בלי סימני דולר ובלי סימני Markdown כמו כוכביות או סולמיות. לחישובים השתמש בסימנים × ÷ + − =."
-    : "פתור את השאלה בקפידה, שלב אחרי שלב ובקצרה, ובדוק את עצמך (למשל: מי יצא קודם, יחידות מידה, מלכודות היגיון). בסוף כתוב שורה נפרדת שמתחילה ב'תשובה:' ובה רק התשובה הסופית, קצרה וברורה. כתוב אך ורק בעברית תקנית. אסור לשלב מילים בשפות אחרות (רוסית, גרמנית, אנגלית, סינית וכדומה), חוץ ממספרים וסימנים מתמטיים. בדוק את החישוב לפני שאתה עונה. כתוב טקסט פשוט בלבד: בלי LaTeX, בלי סימני דולר ובלי סימני Markdown כמו כוכביות או סולמיות. לחישובים השתמש בסימנים × ÷ + − =.";
+  const mode = search ? "search" : explain ? "explain" : "answer";
+  const gKey = (Netlify.env.get("GEMINI_API_KEY") || "").trim();
+  const qKey = (Netlify.env.get("GROQ_API_KEY") || "").trim();
+  const notes = [];
 
-  const parts = [];
-  if (question) parts.push({ text: question });
-  if (image) {
-    const m = image.match(/^data:(.+?);base64,(.+)$/);
+  // ---------- Gemini ----------
+  if (gKey) {
+    const parts = [];
+    if (question) parts.push({ text: question });
+    const m = image?.match(/^data:(.+?);base64,(.+)$/);
     if (m) parts.push({ inline_data: { mime_type: m[1], data: m[2] } });
-  }
 
-  if (search) {
-    const gk = (Netlify.env.get("GROQ_API_KEY") || "").trim();
-    if (!gk) return json({ error: "חיפוש באינטרנט דורש GROQ_API_KEY" }, 500);
-    if (!question) return json({ error: "אין שאלה לחיפוש" }, 400);
-    const forced = Netlify.env.get("GROQ_SEARCH_MODEL");
-    const pick = forced ? { model: forced, tool: /gpt-oss/i.test(forced) } : await pickSearch(gk).catch((e) => ({ error: e.name }));
-    if (pick.error) return json({ error: "חיפוש: " + pick.error }, 502);
-    const sm = pick.model;
-    const sr = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${gk}` },
-      body: JSON.stringify({
-        model: sm,
-        ...(pick.tool ? { tools: [{ type: "browser_search" }] } : {}),
-        stream: true,
-        messages: [
-          { role: "system", content: "אתה עוזר מחקר זהיר. חפש באינטרנט ובדוק לפחות שני מקורות שונים לפני שאתה עונה. ענה בעברית תקנית בלבד, בקצרה. לכל עובדה ציין בסוגריים מאיזה מקור היא (למשל: לפי ויקיפדיה). אם המקורות סותרים זה את זה, ישנים, או לא אומרים במפורש את מה שנשאל, כתוב זאת במפורש ואל תנחש ואל תשלים פרטים מעצמך. אם לא מצאת תשובה ודאית, כתוב: לא מצאתי מידע אמין. אל תמסור כתובת מגורים מדויקת של אנשים פרטיים. כתוב טקסט פשוט בלי LaTeX, בלי Markdown ובלי סימוני ציטוט. בסוף כתוב מקורות: ומתחת עד 3 כתובות URL, כל אחת בשורה נפרדת." },
-          { role: "user", content: question },
-        ],
-      }),
-      signal: AbortSignal.timeout(30000),
-    }).catch((e) => new Response(JSON.stringify({ error: { message: "החיפוש לא הסתיים בזמן (" + e.name + ")" } }), { status: 504 }));
-    if (!sr.ok) {
-      const t = await sr.json().catch(() => ({}));
-      if (sr.status === 404 || sr.status === 400) searchCache = null;
-      return json({ error: `חיפוש נכשל: ${t.error?.message || "שגיאה"} (קוד ${sr.status}, מודל ${sm})` }, 502);
+    const gemini = (model, fast) =>
+      fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": gKey },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: SYSTEM[mode] }] },
+          contents: [{ role: "user", parts }],
+          ...(search ? { tools: [{ google_search: {} }] } : {}),
+          generationConfig: {
+            temperature: 0.2,
+            ...(fast ? { thinkingConfig: { thinkingLevel: "low" } } : {}),
+          },
+        }),
+        signal: AbortSignal.timeout(15000),
+      }).catch((e) => ({ ok: false, status: e.name === "TimeoutError" ? 504 : 0, json: async () => ({}) }));
+
+    const main = Netlify.env.get("GEMINI_MODEL") || "gemini-3.8-flash";
+    const fast = mode === "answer";
+    let r = await gemini(main, fast);
+    if (fast && r.status === 400) r = await gemini(main, false); // המודל לא תומך בהגדרת החשיבה
+    if (r.ok) return sse(r.body, `Gemini (${main})`);
+    notes.push(`Gemini ${main}: ${r.status || "אין חיבור"}`);
+
+    // עומס או איטיות: מנסים מודל Gemini קל יותר
+    if ([429, 500, 503, 504].includes(r.status)) {
+      const lite = await pickLite(gKey, main);
+      if (lite) {
+        const r2 = await gemini(lite, false);
+        if (r2.ok) return sse(r2.body, `Gemini (${lite})`);
+        notes.push(`Gemini ${lite}: ${r2.status || "אין חיבור"}`);
+      }
+    } else {
+      const g = await r.json().catch(() => ({}));
+      if (g.error?.message) notes.push(g.error.message);
     }
-    return new Response(sr.body, { headers: { "content-type": "text/event-stream", "x-provider": encodeURIComponent(`Groq חיפוש (${sm})`) } });
-  }
+  } else notes.push("חסר GEMINI_API_KEY");
 
-  const stream = (body, provider) =>
-    new Response(body, { headers: { "content-type": "text/event-stream", "x-provider": encodeURIComponent(provider) } });
-
-  // 1) Groq: מהיר, לשאלות טקסט. אם נכשל מכל סיבה, ממשיכים ל-Gemini.
-  const groqKey = (Netlify.env.get("GROQ_API_KEY") || "").trim();
-  let groqNote = groqKey ? "" : "Groq: המפתח GROQ_API_KEY לא נמצא";
-  const groqModel = groqKey && !image && !noGroq
-    ? Netlify.env.get("GROQ_MODEL") || (await pickGroqModel(groqKey).catch(() => null))
-    : null;
-  if (groqKey && !image && !groqModel) groqNote = "Groq: לא נמצא מודל זמין";
-  if (groqModel) {
-    const gr = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${groqKey}` },
-      body: JSON.stringify({
-        model: groqModel,
-        stream: true,
-        temperature: 0.2,
-        messages: [{ role: "system", content: system }, { role: "user", content: question }],
-      }),
-      signal: AbortSignal.timeout(12000),
-    }).catch((e) => { groqNote = "Groq: " + e.name; return null; });
-    if (gr?.ok) return stream(gr.body, `Groq (${groqModel})`);
-    if (gr?.status === 404) groqModelCache = null; // המודל ירד: בפעם הבאה בוחרים מחדש
-    if (gr) {
-      const t = await gr.text().catch(() => "");
-      groqNote = `Groq: ${gr.status} ${t.slice(0, 200)}`;
+  // ---------- Groq: גיבוי אחרון, רק לטקסט ולא לחיפוש ----------
+  if (qKey && !image && !search) {
+    const model = Netlify.env.get("GROQ_MODEL") || (await pickGroq(qKey));
+    if (model) {
+      const gr = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${qKey}` },
+        body: JSON.stringify({
+          model, stream: true, temperature: 0.2,
+          messages: [{ role: "system", content: SYSTEM[mode] }, { role: "user", content: question }],
+        }),
+        signal: AbortSignal.timeout(12000),
+      }).catch(() => null);
+      if (gr?.ok) return sse(gr.body, `Groq (${model}) - גיבוי`);
+      notes.push(`Groq: ${gr?.status || "אין חיבור"}`);
     }
-    console.log(groqNote);
   }
 
-  // 2) Gemini: גיבוי, ושאלות עם תמונה
-  const model = Netlify.env.get("GEMINI_MODEL") || "gemini-3.8-flash";
-  const fallback = Netlify.env.get("GEMINI_FALLBACK_MODEL");
-  const post = (fast, m = model) =>
-    fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:streamGenerateContent?alt=sse`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: system }] },
-        contents: [{ role: "user", parts }],
-        ...(fast ? { generationConfig: { thinkingConfig: { thinkingLevel: "low" } } } : {}),
-      }),
-      signal: AbortSignal.timeout(20000),
-    }).catch(() => new Response(JSON.stringify({ error: { message: "Gemini לא ענה בזמן" } }), { status: 504 }));
-
-  let r = await post(!explain);
-  if (!explain && r.status === 400) r = await post(false); // המודל לא תומך בהגדרת החשיבה
-  // המודל הראשי עמוס: עוברים מיד למודל הגיבוי (שגיאת עומס חוזרת מהר, אז זה לא מאט)
-  if ((r.status === 503 || r.status === 429) && fallback) r = await post(false, fallback);
-
-  if (!r.ok) {
-    const g = await r.json().catch(() => ({}));
-    const msg =
-      r.status === 429 ? "הגעת למכסת השימוש (5 שאלות בדקה). חכה רגע ונסה שוב" :
-      r.status === 503 ? "השרת של Gemini עמוס כרגע, נסה שוב בעוד כמה שניות" :
-      g.error?.message || "שגיאה מה-AI";
-    return json({ error: `${msg} (קוד ${r.status})${groqNote ? "\n" + groqNote : ""}` }, r.status === 503 ? 503 : 502);
-  }
-  return stream(r.body, "Gemini");
+  return json({ error: "כל המנועים עמוסים כרגע, נסה שוב בעוד רגע.\n" + notes.join(" | ") }, 503);
 };
 
 export const config = { path: "/api/ask" };
