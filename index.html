@@ -109,7 +109,7 @@ $("file").onchange = e => {
 
 $("clearBtn").onclick = () => { $("q").value = ""; image = null; $("prev").style.display = "none"; $("ansCard").classList.add("hidden"); };
 
-async function ask(question, img, explain){
+async function ask(question, img, explain, noGroq = false){
   const btns = [$("askBtn"), $("explainBtn"), $("moreBtn")];
   btns.forEach(b => b.disabled = true);
   $("ansCard").classList.remove("hidden");
@@ -117,7 +117,7 @@ async function ask(question, img, explain){
   out.textContent = explain ? "🧠 חושב על הסבר..." : "⚡ חושב...";
   const send = () => fetch("/api/ask", {
     method: "POST", headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ password, question, image: img, explain })
+    body: JSON.stringify({ password, question, image: img, explain, noGroq })
   });
   try{
     let r = await send();
@@ -149,6 +149,12 @@ async function ask(question, img, explain){
             if (text) out.textContent = text;
           }catch{}
         }
+      }
+      // בדיקת איכות: אם נכנסו אותיות של שפה זרה (רוסית, ערבית, סינית, יפנית, קוריאנית), מבקשים מחדש מ-Gemini
+      if (!noGroq && /[\u0400-\u04FF\u0600-\u06FF\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/.test(text)){
+        btns.forEach(b => b.disabled = false);
+        out.textContent = "🔄 התשובה הכילה שפה זרה, מבקש תשובה נקייה...";
+        return ask(question, img, explain, true);
       }
       const prov = r.headers.get("x-provider");
       if (text && prov){ const t = document.createElement("div"); t.className = "muted"; t.textContent = "מנוע: " + prov; out.appendChild(t); }

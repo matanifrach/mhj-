@@ -26,7 +26,7 @@ async function pickGroqModel(key) {
 
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
-  const { password, question, image, explain, check } = await req.json().catch(() => ({}));
+  const { password, question, image, explain, check, noGroq } = await req.json().catch(() => ({}));
   const pass = Netlify.env.get("APP_PASSWORD");
   if (!pass || password !== pass) return json({ error: "סיסמה שגויה" }, 401);
   if (check) return json({ ok: true });
@@ -36,8 +36,8 @@ export default async (req) => {
   if (!question && !image) return json({ error: "אין שאלה" }, 400);
 
   const system = explain
-    ? "אתה מורה פרטי סבלני. הסבר את הפתרון שלב אחרי שלב בעברית פשוטה וברורה, ובסוף כתוב את התשובה הסופית בשורה נפרדת שמתחילה ב'תשובה:'."
-    : "ענה בעברית בקצרה ובדיוק. תן רק את התשובה הסופית, בלי הסברים, אלא אם השאלה דורשת כמה פרטים.";
+    ? "אתה מורה פרטי סבלני. הסבר את הפתרון שלב אחרי שלב בעברית פשוטה וברורה, ובסוף כתוב את התשובה הסופית בשורה נפרדת שמתחילה ב'תשובה:'. כתוב אך ורק בעברית תקנית. אסור לשלב מילים בשפות אחרות (רוסית, גרמנית, אנגלית, סינית וכדומה), חוץ ממספרים וסימנים מתמטיים. בדוק את החישוב לפני שאתה עונה."
+    : "ענה בעברית בקצרה ובדיוק. תן רק את התשובה הסופית, בלי הסברים, אלא אם השאלה דורשת כמה פרטים. כתוב אך ורק בעברית תקנית. אסור לשלב מילים בשפות אחרות (רוסית, גרמנית, אנגלית, סינית וכדומה), חוץ ממספרים וסימנים מתמטיים. בדוק את החישוב לפני שאתה עונה.";
 
   const parts = [];
   if (question) parts.push({ text: question });
@@ -52,7 +52,7 @@ export default async (req) => {
   // 1) Groq: מהיר, לשאלות טקסט. אם נכשל מכל סיבה, ממשיכים ל-Gemini.
   const groqKey = (Netlify.env.get("GROQ_API_KEY") || "").trim();
   let groqNote = groqKey ? "" : "Groq: המפתח GROQ_API_KEY לא נמצא";
-  const groqModel = groqKey && !image
+  const groqModel = groqKey && !image && !noGroq
     ? Netlify.env.get("GROQ_MODEL") || (await pickGroqModel(groqKey).catch(() => null))
     : null;
   if (groqKey && !image && !groqModel) groqNote = "Groq: לא נמצא מודל זמין";
@@ -63,6 +63,7 @@ export default async (req) => {
       body: JSON.stringify({
         model: groqModel,
         stream: true,
+        temperature: 0.2,
         messages: [{ role: "system", content: system }, { role: "user", content: question }],
       }),
       signal: AbortSignal.timeout(12000),
