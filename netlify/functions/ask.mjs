@@ -20,7 +20,7 @@ export default async (req) => {
     if (data) parts.push({ inline_data: { mime_type: mime, data } });
   }
 
-  const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  const model = process.env.GEMINI_MODEL || "gemini-3.8-flash";
   const r = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
     {
