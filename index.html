@@ -116,10 +116,23 @@ function clean(t){
     .replace(/\\frac\{([^}]*)\}\{([^}]*)\}/g, "$1 ÷ $2")
     .replace(/\\text\{([^}]*)\}/g, "$1")
     .replace(/\\times/g, "×").replace(/\\div/g, "÷").replace(/\\cdot/g, "·")
+    .replace(/【[^】]*】/g, "")
     .replace(/\$\$?/g, "").replace(/\\[()\[\]]/g, "")
     .replace(/\*\*(.+?)\*\*/g, "$1").replace(/^#+\s*/gm, "").replace(/^\s*\*\s+/gm, "• ");
 }
 let lastText = "";
+function render(el, t){
+  el.textContent = "";
+  for (const part of t.split(/(https?:\/\/[^\s)]+)/g)){
+    if (/^https?:\/\//.test(part)){
+      const a = document.createElement("a");
+      a.href = part; a.target = "_blank"; a.rel = "noopener";
+      try{ a.textContent = decodeURI(part); }catch{ a.textContent = part; }
+      a.style.color = "var(--accent2)"; a.style.wordBreak = "break-all";
+      el.appendChild(a);
+    } else el.appendChild(document.createTextNode(part));
+  }
+}
 
 async function ask(question, img, explain, noGroq = false, search = false){
   const btns = [$("askBtn"), $("explainBtn"), $("moreBtn"), $("searchBtn")];
@@ -169,7 +182,7 @@ async function ask(question, img, explain, noGroq = false, search = false){
         const m = text.match(/תשובה\s*:\s*([\s\S]+)$/);
         if (m) text = m[1].trim();
       }
-      out.textContent = text; lastText = text;
+      render(out, text); lastText = text;
       // בדיקת איכות: אם נכנסו אותיות של שפה זרה (רוסית, ערבית, סינית, יפנית, קוריאנית), מבקשים מחדש מ-Gemini
       if (!noGroq && !search && /[\u0400-\u04FF\u0600-\u06FF\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/.test(text)){
         btns.forEach(b => b.disabled = false);
