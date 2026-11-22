@@ -51,7 +51,6 @@
       <div class="row">
         <button id="askBtn">⚡ תשובה</button>
         <button id="explainBtn" class="ghost">🧠 תסביר לי</button>
-        <button id="searchBtn" class="ghost">🌐 חפש בוויקיפדיה</button>
         <label class="ghost" style="padding:10px 16px;border:1px solid var(--line);border-radius:12px;cursor:pointer">📷 תמונה
           <input type="file" id="file" accept="image/*" class="hidden"></label>
         <button id="clearBtn" class="ghost">🗑️ נקה</button>
@@ -135,11 +134,11 @@ function render(el, t){
 }
 
 async function ask(question, img, explain, noGroq = false, search = false){
-  const btns = [$("askBtn"), $("explainBtn"), $("moreBtn"), $("searchBtn")];
+  const btns = [$("askBtn"), $("explainBtn"), $("moreBtn")];
   btns.forEach(b => b.disabled = true);
   $("ansCard").classList.remove("hidden");
   const out = $("ans");
-  out.textContent = search ? "🌐 מחפש בוויקיפדיה..." : explain ? "🧠 חושב על הסבר..." : "⚡ חושב...";
+  out.textContent = explain ? "🧠 חושב על הסבר..." : "⚡ חושב (ומחפש באינטרנט אם צריך)...";
   const send = () => fetch("/api/ask", {
     method: "POST", headers: {"Content-Type":"application/json"},
     body: JSON.stringify({ password, question, image: img, explain, noGroq, search })
@@ -176,7 +175,7 @@ async function ask(question, img, explain, noGroq = false, search = false){
             text += ev.choices?.[0]?.delta?.content || "";               // Groq
             text = text.replace(/<think>[\s\S]*?(<\/think>|$)/g, "");
             text = clean(text);
-            if (text) out.textContent = (explain || search) ? text : "⚡ חושב ובודק את עצמו...";
+            if (text) out.textContent = (explain || search) ? text : "⚡ חושב (ומחפש באינטרנט אם צריך)...";
           }catch{}
         }
       }
@@ -209,11 +208,6 @@ async function ask(question, img, explain, noGroq = false, search = false){
 
 $("askBtn").onclick = () => ask($("q").value.trim(), image, false);
 $("explainBtn").onclick = () => ask($("q").value.trim(), image, true);
-$("searchBtn").onclick = () => {
-  const q = $("q").value.trim();
-  if (!q){ $("ansCard").classList.remove("hidden"); $("ans").textContent = "✍️ כתוב קודם מה לחפש"; return; }
-  ask(q, null, false, false, true);
-};
 $("moreBtn").onclick = () => last && ask(last.question, last.image, true);
 $("copyBtn").onclick = () => navigator.clipboard?.writeText(lastText || $("ans").textContent);
 $("q").onkeydown = e => { if (e.key === "Enter" && e.ctrlKey) $("askBtn").click(); };

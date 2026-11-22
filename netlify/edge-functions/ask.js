@@ -1,13 +1,25 @@
-// Edge Function: מזרים תשובות לדפדפן (Streaming).
-// סדר עדיפויות: Gemini (ראשי, כולל חיפוש Google מובנה) ← מודל Gemini קל יותר ← Groq (גיבוי אחרון).
+// Edge Function: Gemini עונה, ומחליט לבד מתי צריך לחפש באינטרנט (Function Calling + Tavily).
+// גיבוי: מודל Gemini קל יותר, ואחריו Groq (בלי חיפוש).
 const json = (o, status = 200) =>
   new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
-const sse = (body, provider) =>
-  new Response(body, { headers: { "content-type": "text/event-stream", "x-provider": encodeURIComponent(provider) } });
+const enc = (s) => encodeURIComponent(s);
+const sse = (body, provider, sources) => {
+  const headers = { "content-type": "text/event-stream", "x-provider": enc(provider) };
+  if (sources?.length) headers["x-sources"] = enc(JSON.stringify(sources));
+  return new Response(body, { headers });
+};
+// תשובה שכבר מוכנה במלואה, בפורמט הזרם ש-Gemini משתמש בו
+const sseText = (text, provider, sources) =>
+  sse(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text }] } }] })}\n\n`, provider, sources);
 
 const RULES =
-  " כתוב אך ורק בעברית תקנית, בלי מילים בשפות אחרות חוץ ממספרים וסימנים מתמטיים." +
+  " כתוב אך ורק בעברית תקנית, בלי מילים בשפות אחרות חוץ ממספרים וסימנים מתמטיים ושמות." +
   " כתוב טקסט פשוט: בלי LaTeX, בלי סימני דולר ובלי Markdown. לחישובים השתמש ב- × ÷ + − =.";
+const SEARCH_RULE =
+  " יש לך כלי web_search. השתמש בו רק כשהשאלה דורשת מידע עדכני או עובדות שאתה לא בטוח בהן" +
+  " (אנשים, אירועים, חדשות, תאריכים, מחירים, ספורט, מקומות). לשאלות חשבון, היגיון, דקדוק או חומר לימודי קבוע אל תחפש." +
+  " אחרי חיפוש, ענה רק לפי מה שכתוב בתוצאות, ואם הן לא עונות במפורש כתוב זאת ואל תנחש." +
+  " אל תמסור כתובת מגורים מדויקת של אנשים פרטיים.";
 const SYSTEM = {
   answer:
     "פתור את השאלה בקפידה, שלב אחרי שלב ובקצרה, ובדוק את עצמך (מי התחיל קודם, יחידות מידה, מלכודות היגיון). " +
@@ -15,13 +27,34 @@ const SYSTEM = {
   explain:
     "אתה מורה פרטי סבלני. הסבר את הפתרון שלב אחרי שלב בעברית פשוטה וברורה, ובדוק את החישוב. " +
     "בסוף כתוב שורה נפרדת שמתחילה ב'תשובה:'." + RULES,
-  search:
-    "אתה עוזר מחקר זהיר. קיבלת קטעים מוויקיפדיה. ענה רק לפי מה שכתוב בהם במפורש, וציין מאיזה ערך לקחת כל עובדה. " +
-    "ענה בקצרה. אם המקורות סותרים, ישנים או לא עונים במפורש על השאלה, כתוב זאת ואל תנחש. " +
-    "אם התשובה המדויקת לא מופיעה במקורות, כתוב זאת במשפט אחד, ואז סכם בקצרה מה כן כתוב בהם על הנושא (למשל איפה גדל או איפה גר בעבר, אם כתוב), עם ציון הערך. אל תמסור כתובת מגורים מדויקת של אנשים פרטיים." + RULES,
 };
 
-// מודל Gemini קל לגיבוי, נבחר מתוך רשימת המודלים שזמינים בפועל לחשבון
+const SEARCH_TOOL = {
+  function_declarations: [{
+    name: "web_search",
+    description: "חיפוש באינטרנט למידע עדכני או לעובדות שלא ידועות בוודאות",
+    parameters: {
+      type: "object",
+      properties: { query: { type: "string", description: "שאילתת חיפוש קצרה וממוקדת" } },
+      required: ["query"],
+    },
+  }],
+};
+
+async function tavily(key, query) {
+  const r = await fetch("https://api.tavily.com/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({ query, max_results: 5, search_depth: "basic" }),
+    signal: AbortSignal.timeout(8000),
+  }).catch(() => null);
+  if (!r?.ok) return { error: `החיפוש נכשל (${r?.status || "אין חיבור"})`, results: [] };
+  const j = await r.json();
+  return {
+    results: (j.results || []).map((x) => ({ title: x.title, url: x.url, content: (x.content || "").slice(0, 1500) })),
+  };
+}
+
 let liteCache;
 async function pickLite(key, main) {
   if (liteCache !== undefined) return liteCache;
@@ -50,104 +83,83 @@ async function pickGroq(key) {
   return (groqCache = ids.sort((a, b) => score(a) - score(b))[0] || null);
 }
 
-// חיפוש בוויקיפדיה (עברית, ואם אין תוצאות גם אנגלית). חינמי ובלי מפתח.
-async function wikiContext(q) {
-  const H = { "User-Agent": "MatanLomed/1.0 (study helper)" };
-  // מילות שאלה נפוצות מפריעות לחיפוש בוויקיפדיה, אז מנסים גם גרסה מקוצרת
-  const STOP = /^(מה|מי|מתי|איפה|היכן|למה|מדוע|איך|כיצד|כמה|האם|של|את|על|זה|זו|הוא|היא|הם|גר|גרה|גרים|כיום|היום|עכשיו|נמצא|נמצאת|עושה|קרה|ב|ל|ה|ו)$/;
-  const short = q.replace(/[?!.,"']/g, " ").split(/\s+/).filter((w) => w && !STOP.test(w)).join(" ");
-  const queries = [...new Set([q, short].filter(Boolean))];
-  for (const lang of ["he", "en"]) {
-    const api = `https://${lang}.wikipedia.org/w/api.php`;
-    const get = (url) => fetch(url, { headers: H, signal: AbortSignal.timeout(5000) }).then((r) => r.json()).catch(() => null);
-    const search = async (qq) => ((await get(`${api}?action=query&list=search&format=json&srlimit=3&srsearch=${encodeURIComponent(qq)}`))?.query?.search || []).map((x) => x.title);
-    let titles = [];
-    // 1) ערך ששמו מתחיל בדיוק בנושא (למשל "דה כהן (יוטיובר)")
-    if (short) {
-      const os = await get(`${api}?action=opensearch&format=json&limit=3&search=${encodeURIComponent(short)}`);
-      titles = (os?.[1] || []).filter((t) => t.startsWith(short));
-    }
-    // 2) חיפוש של הצירוף המדויק, 3) חיפוש חופשי
-    if (!titles.length && short) titles = await search(`"${short}"`);
-    if (!titles.length) for (const qq of queries) { titles = await search(qq); if (titles.length) break; }
-    if (!titles.length) continue;
-    const pages = await Promise.all(titles.map((t) =>
-      fetch(`${api}?action=query&prop=extracts|info&inprop=url&explaintext=1&format=json&redirects=1&titles=${encodeURIComponent(t)}`,
-        { headers: H, signal: AbortSignal.timeout(5000) }).then((r) => r.json()).catch(() => null)));
-    const docs = pages.flatMap((p) => Object.values(p?.query?.pages || {}))
-      .filter((p) => p.extract)
-      .map((p) => ({ title: p.title, url: p.fullurl, text: p.extract.slice(0, 7000) }));
-    if (docs.length) return docs;
-  }
-  return [];
-}
-
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
-  const { password, question, image, explain, check, search } = await req.json().catch(() => ({}));
+  const { password, question, image, explain, check } = await req.json().catch(() => ({}));
   const pass = Netlify.env.get("APP_PASSWORD");
   if (!pass || password !== pass) return json({ error: "סיסמה שגויה" }, 401);
   if (check) return json({ ok: true });
   if (!question && !image) return json({ error: "אין שאלה" }, 400);
 
-  const mode = search ? "search" : explain ? "explain" : "answer";
+  const mode = explain ? "explain" : "answer";
   const gKey = (Netlify.env.get("GEMINI_API_KEY") || "").trim();
   const qKey = (Netlify.env.get("GROQ_API_KEY") || "").trim();
+  const tKey = (Netlify.env.get("TAVILY_API_KEY") || "").trim();
   const notes = [];
 
-  // ---------- Gemini ----------
-  let docs = [];
-  if (search) {
-    docs = await wikiContext(question || "");
-    if (!docs.length) return json({ error: "לא מצאתי ערכים מתאימים בוויקיפדיה. נסה לנסח את החיפוש אחרת." }, 404);
-  }
-  const userText = search
-    ? docs.map((d, i) => `מקור ${i + 1}: ${d.title}\n${d.text}`).join("\n\n---\n\n") + `\n\nשאלה: ${question}`
-    : question;
-
   if (gKey) {
-    const parts = [];
-    if (userText) parts.push({ text: userText });
+    const userParts = [];
+    if (question) userParts.push({ text: question });
     const m = image?.match(/^data:(.+?);base64,(.+)$/);
-    if (m) parts.push({ inline_data: { mime_type: m[1], data: m[2] } });
+    if (m) userParts.push({ inline_data: { mime_type: m[1], data: m[2] } });
 
-    const gemini = (model, fast) =>
-      fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`, {
+    const gemini = (model, contents, { stream = true, tools = false } = {}) =>
+      fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": gKey },
         body: JSON.stringify({
-          system_instruction: { parts: [{ text: SYSTEM[mode] }] },
-          contents: [{ role: "user", parts }],
-          generationConfig: {
-            temperature: 0.2,
-            ...(fast ? { thinkingConfig: { thinkingLevel: "low" } } : {}),
-          },
+          system_instruction: { parts: [{ text: SYSTEM[mode] + (tools ? SEARCH_RULE : "") }] },
+          contents,
+          ...(tools ? { tools: [SEARCH_TOOL] } : {}),
+          generationConfig: { temperature: 0.2 },
         }),
         signal: AbortSignal.timeout(15000),
       }).catch((e) => ({ ok: false, status: e.name === "TimeoutError" ? 504 : 0, json: async () => ({}) }));
-
-    const main = Netlify.env.get("GEMINI_MODEL") || "gemini-3.8-flash";
-    const fast = mode === "answer";
-    let r = await gemini(main, fast);
-    if (fast && r.status === 400) r = await gemini(main, false); // המודל לא תומך בהגדרת החשיבה
-    const withSrc = (res) => { if (docs.length) res.headers.set("x-sources", encodeURIComponent(JSON.stringify(docs.map((d) => ({ title: d.title, uri: d.url }))))); return res; };
-    if (r.ok) return withSrc(sse(r.body, `Gemini (${main})` + (search ? " + ויקיפדיה" : "")));
     const why = async (res) => ((await res.json().catch(() => ({}))).error?.message || "").slice(0, 160);
-    notes.push(`Gemini ${main}: ${r.status || "אין חיבור"} ${await why(r)}`);
 
-    // עומס או איטיות: מנסים מודל Gemini קל יותר
-    if ([429, 500, 503, 504].includes(r.status)) {
+    const run = async (model) => {
+      const contents = [{ role: "user", parts: userParts }];
+      if (!tKey) {
+        const r = await gemini(model, contents);
+        return r.ok ? sse(r.body, `Gemini (${model})`) : r;
+      }
+      // שלב 1: Gemini מחליט אם צריך לחפש
+      const r1 = await gemini(model, contents, { stream: false, tools: true });
+      if (!r1.ok) return r1;
+      const j1 = await r1.json();
+      const parts = j1.candidates?.[0]?.content?.parts || [];
+      const call = parts.find((p) => p.functionCall)?.functionCall;
+      if (!call) {
+        const text = parts.filter((p) => p.text && !p.thought).map((p) => p.text).join("");
+        return sseText(text || "לא התקבלה תשובה", `Gemini (${model})`);
+      }
+      // שלב 2: מחפשים, ומחזירים את התוצאות ל-Gemini שיכתוב תשובה
+      const q = call.args?.query || question;
+      const found = await tavily(tKey, q);
+      const sources = found.results.map((x) => ({ title: x.title, uri: x.url }));
+      contents.push({ role: "model", parts });
+      contents.push({ role: "user", parts: [{ functionResponse: { name: "web_search", response: { query: q, ...found } } }] });
+      const r2 = await gemini(model, contents, { tools: true });
+      return r2.ok ? sse(r2.body, `Gemini (${model}) + חיפוש באינטרנט`, sources) : r2;
+    };
+
+    const isOk = (res) => res instanceof Response && res.headers.get("content-type") === "text/event-stream";
+    const main = Netlify.env.get("GEMINI_MODEL") || "gemini-3.8-flash";
+    let res = await run(main);
+    if (isOk(res)) return res;
+    notes.push(`Gemini ${main}: ${res.status || "אין חיבור"} ${await why(res)}`);
+    if ([429, 500, 503, 504].includes(res.status)) {
       const lite = await pickLite(gKey, main);
       if (lite) {
-        const r2 = await gemini(lite, false);
-        if (r2.ok) return withSrc(sse(r2.body, `Gemini (${lite})` + (search ? " + ויקיפדיה" : "")));
-        notes.push(`Gemini ${lite}: ${r2.status || "אין חיבור"} ${await why(r2)}`);
+        res = await run(lite);
+        if (isOk(res)) return res;
+        notes.push(`Gemini ${lite}: ${res.status || "אין חיבור"} ${await why(res)}`);
       }
     }
   } else notes.push("חסר GEMINI_API_KEY");
 
-  // ---------- Groq: גיבוי אחרון, רק לטקסט ולא לחיפוש ----------
-  if (qKey && !image && !search) {
+  // Groq: גיבוי אחרון, רק לטקסט ובלי חיפוש
+  if (qKey && !image) {
     const model = Netlify.env.get("GROQ_MODEL") || (await pickGroq(qKey));
     if (model) {
       const gr = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -159,7 +171,7 @@ export default async (req) => {
         }),
         signal: AbortSignal.timeout(12000),
       }).catch(() => null);
-      if (gr?.ok) return sse(gr.body, `Groq (${model}) - גיבוי`);
+      if (gr?.ok) return sse(gr.body, `Groq (${model}) - גיבוי, בלי חיפוש`);
       notes.push(`Groq: ${gr?.status || "אין חיבור"}`);
     }
   }
