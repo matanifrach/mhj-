@@ -22,16 +22,25 @@ export default async (req) => {
 
   const models = [process.env.GEMINI_MODEL || "gemini-3.8-flash"];
   if (process.env.GEMINI_FALLBACK_MODEL) models.push(process.env.GEMINI_FALLBACK_MODEL);
-  const body = JSON.stringify({
+  // תשובה ישירה: חשיבה מינימלית = מהיר. "תסביר לי": חשיבה רגילה של המודל.
+  const makeBody = (fast) => JSON.stringify({
     system_instruction: { parts: [{ text: system }] },
     contents: [{ role: "user", parts }],
+    ...(fast ? { generationConfig: { thinkingConfig: { thinkingLevel: "low" } } } : {}),
   });
-  const call = (model) =>
+  const post = (model, fast) =>
     fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body,
+      body: makeBody(fast),
     });
+  const call = async (model) => {
+    const fast = !explain;
+    const res = await post(model, fast);
+    // אם המודל לא תומך בהגדרת החשיבה (400), שולחים שוב בלעדיה
+    if (fast && res.status === 400) return post(model, false);
+    return res;
+  };
 
   // ניסיון אחד בלבד: ניסיונות חוזרים בשרת חורגים ממגבלת הזמן של Netlify ושורפים מכסה
   let r = await call(models[0]);
