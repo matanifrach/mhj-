@@ -20,18 +20,31 @@ export default async (req) => {
     if (data) parts.push({ inline_data: { mime_type: mime, data } });
   }
 
-  const model = process.env.GEMINI_MODEL || "gemini-3.8-flash";
-  const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-    {
+  const models = [process.env.GEMINI_MODEL || "gemini-3.8-flash"];
+  if (process.env.GEMINI_FALLBACK_MODEL) models.push(process.env.GEMINI_FALLBACK_MODEL);
+  const body = JSON.stringify({
+    system_instruction: { parts: [{ text: system }] },
+    contents: [{ role: "user", parts }],
+  });
+  const call = (model) =>
+    fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: system }] },
-        contents: [{ role: "user", parts }],
-      }),
+      body,
+    });
+
+  // עומס זמני (503/429): מנסים שוב אחרי המתנה קצרה, ואז מודל גיבוי אם הוגדר
+  let r;
+  for (const model of models) {
+    for (const wait of [0, 1000, 2500]) {
+      if (wait) await new Promise((res) => setTimeout(res, wait));
+      r = await call(model);
+      if (r.status !== 503 && r.status !== 429) break;
     }
-  );
+    if (r.status !== 503 && r.status !== 429) break;
+  }
+  if (r.status === 503 || r.status === 429)
+    return Response.json({ error: "השרת של Gemini עמוס כרגע 😅 נסה שוב בעוד כמה שניות" }, { status: 503 });
   const j = await r.json();
   if (!r.ok) return Response.json({ error: j.error?.message || "שגיאה מה-AI" }, { status: 502 });
   const answer = j.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "לא התקבלה תשובה";
