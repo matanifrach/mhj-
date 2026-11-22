@@ -1,9 +1,12 @@
 // שולח שאלה ל-Gemini. המפתח נשמר רק בשרת (משתנה סביבה).
 export default async (req) => {
   if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
-  const { password, question, image, explain } = await req.json().catch(() => ({}));
+  const { password, question, image, explain, check } = await req.json().catch(() => ({}));
   if (!process.env.APP_PASSWORD || password !== process.env.APP_PASSWORD)
     return Response.json({ error: "סיסמה שגויה" }, { status: 401 });
+  if (check) return Response.json({ ok: true });
+  const key = (process.env.GEMINI_API_KEY || "").trim();
+  if (!key) return Response.json({ error: "חסר GEMINI_API_KEY ב-Netlify" }, { status: 500 });
   if (!question && !image) return Response.json({ error: "אין שאלה" }, { status: 400 });
 
   const system = explain
@@ -22,7 +25,7 @@ export default async (req) => {
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": process.env.GEMINI_API_KEY },
+      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
         system_instruction: { parts: [{ text: system }] },
         contents: [{ role: "user", parts }],
