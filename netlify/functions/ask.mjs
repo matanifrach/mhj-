@@ -33,16 +33,9 @@ export default async (req) => {
       body,
     });
 
-  // עומס זמני (503/429): מנסים שוב אחרי המתנה קצרה, ואז מודל גיבוי אם הוגדר
-  let r;
-  for (const model of models) {
-    for (const wait of [0, 1000, 2500]) {
-      if (wait) await new Promise((res) => setTimeout(res, wait));
-      r = await call(model);
-      if (r.status !== 503 && r.status !== 429) break;
-    }
-    if (r.status !== 503 && r.status !== 429) break;
-  }
+  // ניסיון אחד בלבד: ניסיונות חוזרים בשרת חורגים ממגבלת הזמן של Netlify ושורפים מכסה
+  let r = await call(models[0]);
+  if ((r.status === 503 || r.status === 429) && models[1]) r = await call(models[1]);
   if (r.status === 503 || r.status === 429) {
     const g = await r.json().catch(() => ({}));
     const msg = r.status === 429

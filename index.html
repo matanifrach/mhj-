@@ -115,11 +115,18 @@ async function ask(question, img, explain){
   $("ansCard").classList.remove("hidden");
   $("ans").textContent = explain ? "🧠 חושב על הסבר..." : "⚡ חושב...";
   try{
-    const r = await fetch("/.netlify/functions/ask", {
+    const send = () => fetch("/.netlify/functions/ask", {
       method: "POST", headers: {"Content-Type":"application/json"},
       body: JSON.stringify({ password, question, image: img, explain })
     });
-    const j = await r.json();
+    let r = await send();
+    if (r.status === 503){ // עומס זמני: ניסיון חוזר אחד מהדפדפן
+      $("ans").textContent = "⏳ השרת עמוס, מנסה שוב...";
+      await new Promise(res => setTimeout(res, 3000));
+      r = await send();
+    }
+    const j = await r.json().catch(() => ({}));
+    if (!j.answer && !j.error) j.error = j.errorMessage || `השרת לא החזיר תשובה (קוד ${r.status}). ייתכן שהבקשה ארכה יותר מדי זמן, נסה שוב.`;
     if (r.status === 401){ location.reload(); return; }
     $("ans").textContent = j.answer || ("❌ " + j.error);
     if (j.answer){
