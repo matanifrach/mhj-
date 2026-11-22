@@ -59,13 +59,17 @@ async function wikiContext(q) {
   const queries = [...new Set([q, short].filter(Boolean))];
   for (const lang of ["he", "en"]) {
     const api = `https://${lang}.wikipedia.org/w/api.php`;
+    const get = (url) => fetch(url, { headers: H, signal: AbortSignal.timeout(5000) }).then((r) => r.json()).catch(() => null);
+    const search = async (qq) => ((await get(`${api}?action=query&list=search&format=json&srlimit=3&srsearch=${encodeURIComponent(qq)}`))?.query?.search || []).map((x) => x.title);
     let titles = [];
-    for (const qq of queries) {
-      const sr = await fetch(`${api}?action=query&list=search&format=json&srlimit=3&srsearch=${encodeURIComponent(qq)}`,
-        { headers: H, signal: AbortSignal.timeout(5000) }).then((r) => r.json()).catch(() => null);
-      titles = (sr?.query?.search || []).map((x) => x.title);
-      if (titles.length) break;
+    // 1) ערך ששמו מתחיל בדיוק בנושא (למשל "דה כהן (יוטיובר)")
+    if (short) {
+      const os = await get(`${api}?action=opensearch&format=json&limit=3&search=${encodeURIComponent(short)}`);
+      titles = (os?.[1] || []).filter((t) => t.startsWith(short));
     }
+    // 2) חיפוש של הצירוף המדויק, 3) חיפוש חופשי
+    if (!titles.length && short) titles = await search(`"${short}"`);
+    if (!titles.length) for (const qq of queries) { titles = await search(qq); if (titles.length) break; }
     if (!titles.length) continue;
     const pages = await Promise.all(titles.map((t) =>
       fetch(`${api}?action=query&prop=extracts|info&inprop=url&explaintext=1&format=json&redirects=1&titles=${encodeURIComponent(t)}`,
