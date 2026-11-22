@@ -3,6 +3,27 @@
 const json = (o, status = 200) =>
   new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
 
+// בחירה אוטומטית של מודל Groq מתוך הרשימה שזמינה בפועל לחשבון (נשמר בזיכרון בין בקשות)
+let groqModelCache = null;
+async function pickGroqModel(key) {
+  if (groqModelCache) return groqModelCache;
+  const r = await fetch("https://api.groq.com/openai/v1/models", {
+    headers: { Authorization: `Bearer ${key}` },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!r.ok) return null;
+  const ids = ((await r.json()).data || [])
+    .filter((m) => m.active !== false)
+    .map((m) => m.id)
+    .filter((id) => !/whisper|tts|guard|audio|speech|embed|compound|vision|ocr/i.test(id));
+  // העדפה: מודלים גדולים (טובים יותר בעברית), אחר כך כל השאר
+  const score = (id) =>
+    (/120b|235b|405b|70b|maverick|kimi|qwen3/i.test(id) ? 0 : 1) + (/instant|8b|mini|small/i.test(id) ? 1 : 0);
+  ids.sort((a, b) => score(a) - score(b));
+  groqModelCache = ids[0] || null;
+  return groqModelCache;
+}
+
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
   const { password, question, image, explain, check } = await req.json().catch(() => ({}));
@@ -31,18 +52,23 @@ export default async (req) => {
   // 1) Groq: מהיר, לשאלות טקסט. אם נכשל מכל סיבה, ממשיכים ל-Gemini.
   const groqKey = (Netlify.env.get("GROQ_API_KEY") || "").trim();
   let groqNote = groqKey ? "" : "Groq: המפתח GROQ_API_KEY לא נמצא";
-  if (groqKey && !image) {
+  const groqModel = groqKey && !image
+    ? Netlify.env.get("GROQ_MODEL") || (await pickGroqModel(groqKey).catch(() => null))
+    : null;
+  if (groqKey && !image && !groqModel) groqNote = "Groq: לא נמצא מודל זמין";
+  if (groqModel) {
     const gr = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${groqKey}` },
       body: JSON.stringify({
-        model: Netlify.env.get("GROQ_MODEL") || "llama-3.3-70b-versatile",
+        model: groqModel,
         stream: true,
         messages: [{ role: "system", content: system }, { role: "user", content: question }],
       }),
       signal: AbortSignal.timeout(12000),
     }).catch((e) => { groqNote = "Groq: " + e.name; return null; });
-    if (gr?.ok) return stream(gr.body, "Groq");
+    if (gr?.ok) return stream(gr.body, `Groq (${groqModel})`);
+    if (gr?.status === 404) groqModelCache = null; // המודל ירד: בפעם הבאה בוחרים מחדש
     if (gr) {
       const t = await gr.text().catch(() => "");
       groqNote = `Groq: ${gr.status} ${t.slice(0, 200)}`;
