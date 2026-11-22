@@ -37,8 +37,11 @@ export default async (req) => {
   const call = async (model) => {
     const fast = !explain;
     const res = await post(model, fast);
-    // אם המודל לא תומך בהגדרת החשיבה (400), שולחים שוב בלעדיה
-    if (fast && res.status === 400) return post(model, false);
+    // אם הבקשה עם הגדרת החשיבה נכשלה (חוץ ממכסה), שולחים שוב בלעדיה
+    if (fast && !res.ok && res.status !== 429) {
+      console.log("fast mode failed", res.status, await res.text().catch(() => ""));
+      return post(model, false);
+    }
     return res;
   };
 
@@ -53,7 +56,7 @@ export default async (req) => {
     return Response.json({ error: `${msg}\n\nפרטים מ-Google: ${g.error?.message || "אין"}` }, { status: r.status });
   }
   const j = await r.json();
-  if (!r.ok) return Response.json({ error: j.error?.message || "שגיאה מה-AI" }, { status: 502 });
+  if (!r.ok) return Response.json({ error: `${j.error?.message || "שגיאה מה-AI"} (קוד ${r.status})` }, { status: 502 });
   const answer = j.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "לא התקבלה תשובה";
   return Response.json({ answer });
 };
