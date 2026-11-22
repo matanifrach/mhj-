@@ -25,6 +25,26 @@ export default async (req) => {
     if (m) parts.push({ inline_data: { mime_type: m[1], data: m[2] } });
   }
 
+  const stream = (body, provider) =>
+    new Response(body, { headers: { "content-type": "text/event-stream", "x-provider": provider } });
+
+  // 1) Groq: מהיר, לשאלות טקסט. אם נכשל מכל סיבה, ממשיכים ל-Gemini.
+  const groqKey = (Netlify.env.get("GROQ_API_KEY") || "").trim();
+  if (groqKey && !image) {
+    const gr = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${groqKey}` },
+      body: JSON.stringify({
+        model: Netlify.env.get("GROQ_MODEL") || "llama-3.3-70b-versatile",
+        stream: true,
+        messages: [{ role: "system", content: system }, { role: "user", content: question }],
+      }),
+    }).catch(() => null);
+    if (gr?.ok) return stream(gr.body, "Groq");
+    if (gr) console.log("Groq failed", gr.status, await gr.text().catch(() => ""));
+  }
+
+  // 2) Gemini: גיבוי, ושאלות עם תמונה
   const model = Netlify.env.get("GEMINI_MODEL") || "gemini-3.8-flash";
   const fallback = Netlify.env.get("GEMINI_FALLBACK_MODEL");
   const post = (fast, m = model) =>
@@ -51,7 +71,7 @@ export default async (req) => {
       g.error?.message || "שגיאה מה-AI";
     return json({ error: `${msg} (קוד ${r.status})` }, r.status === 503 ? 503 : 502);
   }
-  return new Response(r.body, { headers: { "content-type": "text/event-stream" } });
+  return stream(r.body, "Gemini");
 };
 
 export const config = { path: "/api/ask" };

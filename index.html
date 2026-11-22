@@ -143,12 +143,15 @@ async function ask(question, img, explain){
           if (!line.startsWith("data:")) continue;
           try{
             const ev = JSON.parse(line.slice(5));
-            for (const p of ev.candidates?.[0]?.content?.parts || [])
+            for (const p of ev.candidates?.[0]?.content?.parts || [])   // Gemini
               if (p.text && !p.thought) text += p.text;
+            text += ev.choices?.[0]?.delta?.content || "";               // Groq
             if (text) out.textContent = text;
           }catch{}
         }
       }
+      const prov = r.headers.get("x-provider");
+      if (text && prov){ const t = document.createElement("div"); t.className = "muted"; t.textContent = "מנוע: " + prov; out.appendChild(t); }
       if (!text) out.textContent = "❌ לא התקבלה תשובה, נסה שוב";
       else {
         last = { question, image: img };
