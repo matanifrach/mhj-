@@ -24,6 +24,22 @@ async function pickGroqModel(key) {
   return groqModelCache;
 }
 
+// בחירה אוטומטית של מודל חיפוש: קודם compound, אחרת מודל gpt-oss עם הכלי browser_search
+let searchCache = null;
+async function pickSearch(key) {
+  if (searchCache) return searchCache;
+  const r = await fetch("https://api.groq.com/openai/v1/models", {
+    headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(5000),
+  });
+  if (!r.ok) return { error: `לא הצלחתי לקבל את רשימת המודלים (קוד ${r.status})` };
+  const ids = ((await r.json()).data || []).filter((m) => m.active !== false).map((m) => m.id);
+  const compound = ids.filter((id) => /compound|search|browse/i.test(id)).sort((a, b) => /mini/.test(a) - /mini/.test(b));
+  if (compound.length) return (searchCache = { model: compound[0] });
+  const oss = ids.filter((id) => /gpt-oss/i.test(id)).sort((a, b) => /120b/.test(b) - /120b/.test(a));
+  if (oss.length) return (searchCache = { model: oss[0], tool: true });
+  return { error: "אין בחשבון מודל עם חיפוש. מודלים זמינים: " + ids.slice(0, 15).join(", ") };
+}
+
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
   const { password, question, image, explain, check, noGroq, search } = await req.json().catch(() => ({}));
@@ -50,15 +66,19 @@ export default async (req) => {
     const gk = (Netlify.env.get("GROQ_API_KEY") || "").trim();
     if (!gk) return json({ error: "חיפוש באינטרנט דורש GROQ_API_KEY" }, 500);
     if (!question) return json({ error: "אין שאלה לחיפוש" }, 400);
-    const sm = Netlify.env.get("GROQ_SEARCH_MODEL") || "groq/compound-mini";
+    const forced = Netlify.env.get("GROQ_SEARCH_MODEL");
+    const pick = forced ? { model: forced, tool: /gpt-oss/i.test(forced) } : await pickSearch(gk).catch((e) => ({ error: e.name }));
+    if (pick.error) return json({ error: "חיפוש: " + pick.error }, 502);
+    const sm = pick.model;
     const sr = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${gk}` },
       body: JSON.stringify({
         model: sm,
+        ...(pick.tool ? { tools: [{ type: "browser_search" }] } : {}),
         stream: true,
         messages: [
-          { role: "system", content: "חפש באינטרנט מידע עדכני ואמין וענה בעברית תקנית בלבד, בקצרה ובדיוק. אם לא מצאת מידע ודאי, אמור שלא מצאת ואל תמציא. כתוב טקסט פשוט בלי LaTeX ובלי Markdown. בסוף כתוב 'מקורות:' ומתחת רשימה של עד 3 כתובות URL שבהן השתמשת." },
+          { role: "system", content: "חפש באינטרנט מידע עדכני ואמין וענה בעברית תקנית בלבד, בקצרה ובדיוק. אם לא מצאת מידע ודאי, אמור שלא מצאת ואל תמציא. אל תמסור כתובת מגורים מדויקת של אנשים פרטיים. כתוב טקסט פשוט בלי LaTeX ובלי Markdown. בסוף כתוב 'מקורות:' ומתחת רשימה של עד 3 כתובות URL שבהן השתמשת." },
           { role: "user", content: question },
         ],
       }),
@@ -66,6 +86,7 @@ export default async (req) => {
     }).catch((e) => new Response(JSON.stringify({ error: { message: "החיפוש לא הסתיים בזמן (" + e.name + ")" } }), { status: 504 }));
     if (!sr.ok) {
       const t = await sr.json().catch(() => ({}));
+      if (sr.status === 404 || sr.status === 400) searchCache = null;
       return json({ error: `חיפוש נכשל: ${t.error?.message || "שגיאה"} (קוד ${sr.status}, מודל ${sm})` }, 502);
     }
     return new Response(sr.body, { headers: { "content-type": "text/event-stream", "x-provider": `Groq חיפוש (${sm})` } });
