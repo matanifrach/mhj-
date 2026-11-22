@@ -30,6 +30,7 @@ export default async (req) => {
 
   // 1) Groq: מהיר, לשאלות טקסט. אם נכשל מכל סיבה, ממשיכים ל-Gemini.
   const groqKey = (Netlify.env.get("GROQ_API_KEY") || "").trim();
+  let groqNote = groqKey ? "" : "Groq: המפתח GROQ_API_KEY לא נמצא";
   if (groqKey && !image) {
     const gr = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -39,9 +40,14 @@ export default async (req) => {
         stream: true,
         messages: [{ role: "system", content: system }, { role: "user", content: question }],
       }),
-    }).catch(() => null);
+      signal: AbortSignal.timeout(12000),
+    }).catch((e) => { groqNote = "Groq: " + e.name; return null; });
     if (gr?.ok) return stream(gr.body, "Groq");
-    if (gr) console.log("Groq failed", gr.status, await gr.text().catch(() => ""));
+    if (gr) {
+      const t = await gr.text().catch(() => "");
+      groqNote = `Groq: ${gr.status} ${t.slice(0, 200)}`;
+    }
+    console.log(groqNote);
   }
 
   // 2) Gemini: גיבוי, ושאלות עם תמונה
@@ -56,7 +62,8 @@ export default async (req) => {
         contents: [{ role: "user", parts }],
         ...(fast ? { generationConfig: { thinkingConfig: { thinkingLevel: "low" } } } : {}),
       }),
-    });
+      signal: AbortSignal.timeout(20000),
+    }).catch(() => new Response(JSON.stringify({ error: { message: "Gemini לא ענה בזמן" } }), { status: 504 }));
 
   let r = await post(!explain);
   if (!explain && r.status === 400) r = await post(false); // המודל לא תומך בהגדרת החשיבה
@@ -69,7 +76,7 @@ export default async (req) => {
       r.status === 429 ? "הגעת למכסת השימוש (5 שאלות בדקה). חכה רגע ונסה שוב" :
       r.status === 503 ? "השרת של Gemini עמוס כרגע, נסה שוב בעוד כמה שניות" :
       g.error?.message || "שגיאה מה-AI";
-    return json({ error: `${msg} (קוד ${r.status})` }, r.status === 503 ? 503 : 502);
+    return json({ error: `${msg} (קוד ${r.status})${groqNote ? "\n" + groqNote : ""}` }, r.status === 503 ? 503 : 502);
   }
   return stream(r.body, "Gemini");
 };
