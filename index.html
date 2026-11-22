@@ -109,6 +109,17 @@ $("file").onchange = e => {
 
 $("clearBtn").onclick = () => { $("q").value = ""; image = null; $("prev").style.display = "none"; $("ansCard").classList.add("hidden"); };
 
+// ממיר שאריות LaTeX ו-Markdown לטקסט קריא
+function clean(t){
+  return t
+    .replace(/\\frac\{([^}]*)\}\{([^}]*)\}/g, "$1 ÷ $2")
+    .replace(/\\text\{([^}]*)\}/g, "$1")
+    .replace(/\\times/g, "×").replace(/\\div/g, "÷").replace(/\\cdot/g, "·")
+    .replace(/\$\$?/g, "").replace(/\\[()\[\]]/g, "")
+    .replace(/\*\*(.+?)\*\*/g, "$1").replace(/^#+\s*/gm, "").replace(/^\s*\*\s+/gm, "• ");
+}
+let lastText = "";
+
 async function ask(question, img, explain, noGroq = false){
   const btns = [$("askBtn"), $("explainBtn"), $("moreBtn")];
   btns.forEach(b => b.disabled = true);
@@ -147,6 +158,7 @@ async function ask(question, img, explain, noGroq = false){
               if (p.text && !p.thought) text += p.text;
             text += ev.choices?.[0]?.delta?.content || "";               // Groq
             text = text.replace(/<think>[\s\S]*?(<\/think>|$)/g, "");
+            text = clean(text);
             if (text) out.textContent = explain ? text : "⚡ חושב ובודק את עצמו...";
           }catch{}
         }
@@ -156,7 +168,7 @@ async function ask(question, img, explain, noGroq = false){
         const m = text.match(/תשובה\s*:\s*([\s\S]+)$/);
         if (m) text = m[1].trim();
       }
-      out.textContent = text;
+      out.textContent = text; lastText = text;
       // בדיקת איכות: אם נכנסו אותיות של שפה זרה (רוסית, ערבית, סינית, יפנית, קוריאנית), מבקשים מחדש מ-Gemini
       if (!noGroq && /[\u0400-\u04FF\u0600-\u06FF\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/.test(text)){
         btns.forEach(b => b.disabled = false);
@@ -180,7 +192,7 @@ async function ask(question, img, explain, noGroq = false){
 $("askBtn").onclick = () => ask($("q").value.trim(), image, false);
 $("explainBtn").onclick = () => ask($("q").value.trim(), image, true);
 $("moreBtn").onclick = () => last && ask(last.question, last.image, true);
-$("copyBtn").onclick = () => navigator.clipboard?.writeText($("ans").textContent);
+$("copyBtn").onclick = () => navigator.clipboard?.writeText(lastText || $("ans").textContent);
 $("q").onkeydown = e => { if (e.key === "Enter" && e.ctrlKey) $("askBtn").click(); };
 
 function renderHist(){
