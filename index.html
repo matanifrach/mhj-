@@ -146,10 +146,17 @@ async function ask(question, img, explain, noGroq = false){
             for (const p of ev.candidates?.[0]?.content?.parts || [])   // Gemini
               if (p.text && !p.thought) text += p.text;
             text += ev.choices?.[0]?.delta?.content || "";               // Groq
-            if (text) out.textContent = text;
+            text = text.replace(/<think>[\s\S]*?(<\/think>|$)/g, "");
+            if (text) out.textContent = explain ? text : "⚡ חושב ובודק את עצמו...";
           }catch{}
         }
       }
+      // מצב "תשובה": המודל פותר בשקט, ומציגים רק את השורה האחרונה של "תשובה:"
+      if (!explain && text){
+        const m = text.match(/תשובה\s*:\s*([\s\S]+)$/);
+        if (m) text = m[1].trim();
+      }
+      out.textContent = text;
       // בדיקת איכות: אם נכנסו אותיות של שפה זרה (רוסית, ערבית, סינית, יפנית, קוריאנית), מבקשים מחדש מ-Gemini
       if (!noGroq && /[\u0400-\u04FF\u0600-\u06FF\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/.test(text)){
         btns.forEach(b => b.disabled = false);
