@@ -43,8 +43,13 @@ export default async (req) => {
     }
     if (r.status !== 503 && r.status !== 429) break;
   }
-  if (r.status === 503 || r.status === 429)
-    return Response.json({ error: "השרת של Gemini עמוס כרגע 😅 נסה שוב בעוד כמה שניות" }, { status: 503 });
+  if (r.status === 503 || r.status === 429) {
+    const g = await r.json().catch(() => ({}));
+    const msg = r.status === 429
+      ? "הגעת למכסת השימוש החינמית של המודל הזה (429)"
+      : "השרת של Gemini עמוס כרגע (503)";
+    return Response.json({ error: `${msg}\n\nפרטים מ-Google: ${g.error?.message || "אין"}` }, { status: r.status });
+  }
   const j = await r.json();
   if (!r.ok) return Response.json({ error: j.error?.message || "שגיאה מה-AI" }, { status: 502 });
   const answer = j.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "לא התקבלה תשובה";
