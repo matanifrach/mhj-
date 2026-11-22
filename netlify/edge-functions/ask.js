@@ -91,7 +91,8 @@ export default async (req) => {
     let r = await gemini(main, fast);
     if (fast && r.status === 400) r = await gemini(main, false); // המודל לא תומך בהגדרת החשיבה
     if (r.ok) return sse(r.body, `Gemini (${main})`);
-    notes.push(`Gemini ${main}: ${r.status || "אין חיבור"}`);
+    const why = async (res) => ((await res.json().catch(() => ({}))).error?.message || "").slice(0, 160);
+    notes.push(`Gemini ${main}: ${r.status || "אין חיבור"} ${await why(r)}`);
 
     // עומס או איטיות: מנסים מודל Gemini קל יותר
     if ([429, 500, 503, 504].includes(r.status)) {
@@ -99,11 +100,8 @@ export default async (req) => {
       if (lite) {
         const r2 = await gemini(lite, false);
         if (r2.ok) return sse(r2.body, `Gemini (${lite})`);
-        notes.push(`Gemini ${lite}: ${r2.status || "אין חיבור"}`);
+        notes.push(`Gemini ${lite}: ${r2.status || "אין חיבור"} ${await why(r2)}`);
       }
-    } else {
-      const g = await r.json().catch(() => ({}));
-      if (g.error?.message) notes.push(g.error.message);
     }
   } else notes.push("חסר GEMINI_API_KEY");
 
