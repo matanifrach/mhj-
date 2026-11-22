@@ -176,7 +176,7 @@ async function ask(question, img, explain, noGroq = false, search = false){
         out.textContent = "🔄 התשובה הכילה שפה זרה, מבקש תשובה נקייה...";
         return ask(question, img, explain, true);
       }
-      const prov = r.headers.get("x-provider");
+      const prov = decodeURIComponent(r.headers.get("x-provider") || "");
       if (text && prov){ const t = document.createElement("div"); t.className = "muted"; t.textContent = "מנוע: " + prov; out.appendChild(t); }
       if (!text) out.textContent = "❌ לא התקבלה תשובה, נסה שוב";
       else {

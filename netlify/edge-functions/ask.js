@@ -89,11 +89,11 @@ export default async (req) => {
       if (sr.status === 404 || sr.status === 400) searchCache = null;
       return json({ error: `חיפוש נכשל: ${t.error?.message || "שגיאה"} (קוד ${sr.status}, מודל ${sm})` }, 502);
     }
-    return new Response(sr.body, { headers: { "content-type": "text/event-stream", "x-provider": `Groq חיפוש (${sm})` } });
+    return new Response(sr.body, { headers: { "content-type": "text/event-stream", "x-provider": encodeURIComponent(`Groq חיפוש (${sm})`) } });
   }
 
   const stream = (body, provider) =>
-    new Response(body, { headers: { "content-type": "text/event-stream", "x-provider": provider } });
+    new Response(body, { headers: { "content-type": "text/event-stream", "x-provider": encodeURIComponent(provider) } });
 
   // 1) Groq: מהיר, לשאלות טקסט. אם נכשל מכל סיבה, ממשיכים ל-Gemini.
   const groqKey = (Netlify.env.get("GROQ_API_KEY") || "").trim();
