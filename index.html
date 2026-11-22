@@ -87,7 +87,7 @@ function showMain(){ $("loginCard").classList.add("hidden"); $("main").classList
 $("loginBtn").onclick = async () => {
   const pw = $("pw").value; $("loginBtn").disabled = true;
   try{
-    const r = await fetch("/.netlify/functions/ask", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ password: pw, check: true }) });
+    const r = await fetch("/api/ask", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ password: pw, check: true }) });
     if (r.ok){ password = pw; showMain(); }
     else { $("pw").value = ""; $("pw").placeholder = "❌ סיסמה שגויה, נסה שוב"; }
   }catch{ $("pw").placeholder = "❌ אין חיבור לשרת"; }
@@ -113,29 +113,51 @@ async function ask(question, img, explain){
   const btns = [$("askBtn"), $("explainBtn"), $("moreBtn")];
   btns.forEach(b => b.disabled = true);
   $("ansCard").classList.remove("hidden");
-  $("ans").textContent = explain ? "🧠 חושב על הסבר..." : "⚡ חושב...";
+  const out = $("ans");
+  out.textContent = explain ? "🧠 חושב על הסבר..." : "⚡ חושב...";
+  const send = () => fetch("/api/ask", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ password, question, image: img, explain })
+  });
   try{
-    const send = () => fetch("/.netlify/functions/ask", {
-      method: "POST", headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ password, question, image: img, explain })
-    });
     let r = await send();
-    if (r.status === 503){ // עומס זמני: ניסיון חוזר אחד מהדפדפן
-      $("ans").textContent = "⏳ השרת עמוס, מנסה שוב...";
+    if (r.status === 503){ // עומס זמני: ניסיון חוזר אחד
+      out.textContent = "⏳ השרת עמוס, מנסה שוב...";
       await new Promise(res => setTimeout(res, 3000));
       r = await send();
     }
-    const j = await r.json().catch(() => ({}));
-    if (!j.answer && !j.error) j.error = j.errorMessage || `השרת לא החזיר תשובה (קוד ${r.status}). ייתכן שהבקשה ארכה יותר מדי זמן, נסה שוב.`;
     if (r.status === 401){ location.reload(); return; }
-    $("ans").textContent = j.answer || ("❌ " + j.error);
-    if (j.answer){
-      last = { question, image: img };
-      const h = store.get("hist", []);
-      h.unshift({ q: question || "📷 תמונה", a: j.answer });
-      store.set("hist", h.slice(0, 30)); renderHist();
+    if (!r.ok || !r.body){
+      const j = await r.json().catch(() => ({}));
+      out.textContent = "❌ " + (j.error || `שגיאה (קוד ${r.status})`);
+    } else {
+      // קריאת הזרם (SSE) והצגת הטקסט תוך כדי שהוא מגיע
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = "", text = "";
+      for (;;){
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split("\n"); buf = lines.pop();
+        for (const line of lines){
+          if (!line.startsWith("data:")) continue;
+          try{
+            const ev = JSON.parse(line.slice(5));
+            for (const p of ev.candidates?.[0]?.content?.parts || [])
+              if (p.text && !p.thought) text += p.text;
+            if (text) out.textContent = text;
+          }catch{}
+        }
+      }
+      if (!text) out.textContent = "❌ לא התקבלה תשובה, נסה שוב";
+      else {
+        last = { question, image: img };
+        const h = store.get("hist", []);
+        h.unshift({ q: question || "📷 תמונה", a: text });
+        store.set("hist", h.slice(0, 30)); renderHist();
+      }
     }
-  }catch{ $("ans").textContent = "❌ אין חיבור לשרת"; }
+  }catch{ out.textContent = "❌ החיבור נקטע, נסה שוב"; }
   btns.forEach(b => b.disabled = false);
 }
 
