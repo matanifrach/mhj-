@@ -16,7 +16,7 @@ const SYSTEM = {
     "אתה מורה פרטי סבלני. הסבר את הפתרון שלב אחרי שלב בעברית פשוטה וברורה, ובדוק את החישוב. " +
     "בסוף כתוב שורה נפרדת שמתחילה ב'תשובה:'." + RULES,
   search:
-    "אתה עוזר מחקר זהיר. השתמש בחיפוש Google וענה רק לפי מה שהמקורות אומרים במפורש. " +
+    "אתה עוזר מחקר זהיר. קיבלת קטעים מוויקיפדיה. ענה רק לפי מה שכתוב בהם במפורש, וציין מאיזה ערך לקחת כל עובדה. " +
     "ענה בקצרה. אם המקורות סותרים, ישנים או לא עונים במפורש על השאלה, כתוב זאת ואל תנחש. " +
     "אם אין מידע אמין, כתוב: לא מצאתי מידע אמין. אל תמסור כתובת מגורים מדויקת של אנשים פרטיים." + RULES,
 };
@@ -50,6 +50,34 @@ async function pickGroq(key) {
   return (groqCache = ids.sort((a, b) => score(a) - score(b))[0] || null);
 }
 
+// חיפוש בוויקיפדיה (עברית, ואם אין תוצאות גם אנגלית). חינמי ובלי מפתח.
+async function wikiContext(q) {
+  const H = { "User-Agent": "MatanLomed/1.0 (study helper)" };
+  // מילות שאלה נפוצות מפריעות לחיפוש בוויקיפדיה, אז מנסים גם גרסה מקוצרת
+  const STOP = /^(מה|מי|מתי|איפה|היכן|למה|מדוע|איך|כיצד|כמה|האם|של|את|על|זה|זו|הוא|היא|הם|גר|גרה|גרים|כיום|היום|עכשיו|נמצא|נמצאת|עושה|קרה|ב|ל|ה|ו)$/;
+  const short = q.replace(/[?!.,"']/g, " ").split(/\s+/).filter((w) => w && !STOP.test(w)).join(" ");
+  const queries = [...new Set([q, short].filter(Boolean))];
+  for (const lang of ["he", "en"]) {
+    const api = `https://${lang}.wikipedia.org/w/api.php`;
+    let titles = [];
+    for (const qq of queries) {
+      const sr = await fetch(`${api}?action=query&list=search&format=json&srlimit=3&srsearch=${encodeURIComponent(qq)}`,
+        { headers: H, signal: AbortSignal.timeout(5000) }).then((r) => r.json()).catch(() => null);
+      titles = (sr?.query?.search || []).map((x) => x.title);
+      if (titles.length) break;
+    }
+    if (!titles.length) continue;
+    const pages = await Promise.all(titles.map((t) =>
+      fetch(`${api}?action=query&prop=extracts|info&inprop=url&explaintext=1&format=json&redirects=1&titles=${encodeURIComponent(t)}`,
+        { headers: H, signal: AbortSignal.timeout(5000) }).then((r) => r.json()).catch(() => null)));
+    const docs = pages.flatMap((p) => Object.values(p?.query?.pages || {}))
+      .filter((p) => p.extract)
+      .map((p) => ({ title: p.title, url: p.fullurl, text: p.extract.slice(0, 7000) }));
+    if (docs.length) return docs;
+  }
+  return [];
+}
+
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
   const { password, question, image, explain, check, search } = await req.json().catch(() => ({}));
@@ -64,9 +92,18 @@ export default async (req) => {
   const notes = [];
 
   // ---------- Gemini ----------
+  let docs = [];
+  if (search) {
+    docs = await wikiContext(question || "");
+    if (!docs.length) return json({ error: "לא מצאתי ערכים מתאימים בוויקיפדיה. נסה לנסח את החיפוש אחרת." }, 404);
+  }
+  const userText = search
+    ? docs.map((d, i) => `מקור ${i + 1}: ${d.title}\n${d.text}`).join("\n\n---\n\n") + `\n\nשאלה: ${question}`
+    : question;
+
   if (gKey) {
     const parts = [];
-    if (question) parts.push({ text: question });
+    if (userText) parts.push({ text: userText });
     const m = image?.match(/^data:(.+?);base64,(.+)$/);
     if (m) parts.push({ inline_data: { mime_type: m[1], data: m[2] } });
 
@@ -77,7 +114,6 @@ export default async (req) => {
         body: JSON.stringify({
           system_instruction: { parts: [{ text: SYSTEM[mode] }] },
           contents: [{ role: "user", parts }],
-          ...(search ? { tools: [{ google_search: {} }] } : {}),
           generationConfig: {
             temperature: 0.2,
             ...(fast ? { thinkingConfig: { thinkingLevel: "low" } } : {}),
@@ -90,7 +126,8 @@ export default async (req) => {
     const fast = mode === "answer";
     let r = await gemini(main, fast);
     if (fast && r.status === 400) r = await gemini(main, false); // המודל לא תומך בהגדרת החשיבה
-    if (r.ok) return sse(r.body, `Gemini (${main})`);
+    const withSrc = (res) => { if (docs.length) res.headers.set("x-sources", encodeURIComponent(JSON.stringify(docs.map((d) => ({ title: d.title, uri: d.url }))))); return res; };
+    if (r.ok) return withSrc(sse(r.body, `Gemini (${main})` + (search ? " + ויקיפדיה" : "")));
     const why = async (res) => ((await res.json().catch(() => ({}))).error?.message || "").slice(0, 160);
     notes.push(`Gemini ${main}: ${r.status || "אין חיבור"} ${await why(r)}`);
 
@@ -99,7 +136,7 @@ export default async (req) => {
       const lite = await pickLite(gKey, main);
       if (lite) {
         const r2 = await gemini(lite, false);
-        if (r2.ok) return sse(r2.body, `Gemini (${lite})`);
+        if (r2.ok) return withSrc(sse(r2.body, `Gemini (${lite})` + (search ? " + ויקיפדיה" : "")));
         notes.push(`Gemini ${lite}: ${r2.status || "אין חיבור"} ${await why(r2)}`);
       }
     }

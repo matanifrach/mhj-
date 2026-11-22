@@ -51,7 +51,7 @@
       <div class="row">
         <button id="askBtn">⚡ תשובה</button>
         <button id="explainBtn" class="ghost">🧠 תסביר לי</button>
-        <button id="searchBtn" class="ghost">🌐 חפש באינטרנט</button>
+        <button id="searchBtn" class="ghost">🌐 חפש בוויקיפדיה</button>
         <label class="ghost" style="padding:10px 16px;border:1px solid var(--line);border-radius:12px;cursor:pointer">📷 תמונה
           <input type="file" id="file" accept="image/*" class="hidden"></label>
         <button id="clearBtn" class="ghost">🗑️ נקה</button>
@@ -139,7 +139,7 @@ async function ask(question, img, explain, noGroq = false, search = false){
   btns.forEach(b => b.disabled = true);
   $("ansCard").classList.remove("hidden");
   const out = $("ans");
-  out.textContent = search ? "🌐 מחפש באינטרנט..." : explain ? "🧠 חושב על הסבר..." : "⚡ חושב...";
+  out.textContent = search ? "🌐 מחפש בוויקיפדיה..." : explain ? "🧠 חושב על הסבר..." : "⚡ חושב...";
   const send = () => fetch("/api/ask", {
     method: "POST", headers: {"Content-Type":"application/json"},
     body: JSON.stringify({ password, question, image: img, explain, noGroq, search })
@@ -159,6 +159,7 @@ async function ask(question, img, explain, noGroq = false, search = false){
       // קריאת הזרם (SSE) והצגת הטקסט תוך כדי שהוא מגיע
       const reader = r.body.getReader(), dec = new TextDecoder();
       let buf = "", text = ""; const srcs = [];
+      try{ srcs.push(...JSON.parse(decodeURIComponent(r.headers.get("x-sources") || "%5B%5D"))); }catch{}
       for (;;){
         const { done, value } = await reader.read();
         if (done) break;
