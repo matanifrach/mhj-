@@ -26,7 +26,7 @@ async function pickGroqModel(key) {
 
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
-  const { password, question, image, explain, check, noGroq } = await req.json().catch(() => ({}));
+  const { password, question, image, explain, check, noGroq, search } = await req.json().catch(() => ({}));
   const pass = Netlify.env.get("APP_PASSWORD");
   if (!pass || password !== pass) return json({ error: "סיסמה שגויה" }, 401);
   if (check) return json({ ok: true });
@@ -44,6 +44,31 @@ export default async (req) => {
   if (image) {
     const m = image.match(/^data:(.+?);base64,(.+)$/);
     if (m) parts.push({ inline_data: { mime_type: m[1], data: m[2] } });
+  }
+
+  if (search) {
+    const gk = (Netlify.env.get("GROQ_API_KEY") || "").trim();
+    if (!gk) return json({ error: "חיפוש באינטרנט דורש GROQ_API_KEY" }, 500);
+    if (!question) return json({ error: "אין שאלה לחיפוש" }, 400);
+    const sm = Netlify.env.get("GROQ_SEARCH_MODEL") || "groq/compound-mini";
+    const sr = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${gk}` },
+      body: JSON.stringify({
+        model: sm,
+        stream: true,
+        messages: [
+          { role: "system", content: "חפש באינטרנט מידע עדכני ואמין וענה בעברית תקנית בלבד, בקצרה ובדיוק. אם לא מצאת מידע ודאי, אמור שלא מצאת ואל תמציא. כתוב טקסט פשוט בלי LaTeX ובלי Markdown. בסוף כתוב 'מקורות:' ומתחת רשימה של עד 3 כתובות URL שבהן השתמשת." },
+          { role: "user", content: question },
+        ],
+      }),
+      signal: AbortSignal.timeout(30000),
+    }).catch((e) => new Response(JSON.stringify({ error: { message: "החיפוש לא הסתיים בזמן (" + e.name + ")" } }), { status: 504 }));
+    if (!sr.ok) {
+      const t = await sr.json().catch(() => ({}));
+      return json({ error: `חיפוש נכשל: ${t.error?.message || "שגיאה"} (קוד ${sr.status}, מודל ${sm})` }, 502);
+    }
+    return new Response(sr.body, { headers: { "content-type": "text/event-stream", "x-provider": `Groq חיפוש (${sm})` } });
   }
 
   const stream = (body, provider) =>

@@ -51,6 +51,7 @@
       <div class="row">
         <button id="askBtn">⚡ תשובה</button>
         <button id="explainBtn" class="ghost">🧠 תסביר לי</button>
+        <button id="searchBtn" class="ghost">🌐 חפש באינטרנט</button>
         <label class="ghost" style="padding:10px 16px;border:1px solid var(--line);border-radius:12px;cursor:pointer">📷 תמונה
           <input type="file" id="file" accept="image/*" class="hidden"></label>
         <button id="clearBtn" class="ghost">🗑️ נקה</button>
@@ -120,15 +121,15 @@ function clean(t){
 }
 let lastText = "";
 
-async function ask(question, img, explain, noGroq = false){
-  const btns = [$("askBtn"), $("explainBtn"), $("moreBtn")];
+async function ask(question, img, explain, noGroq = false, search = false){
+  const btns = [$("askBtn"), $("explainBtn"), $("moreBtn"), $("searchBtn")];
   btns.forEach(b => b.disabled = true);
   $("ansCard").classList.remove("hidden");
   const out = $("ans");
-  out.textContent = explain ? "🧠 חושב על הסבר..." : "⚡ חושב...";
+  out.textContent = search ? "🌐 מחפש באינטרנט..." : explain ? "🧠 חושב על הסבר..." : "⚡ חושב...";
   const send = () => fetch("/api/ask", {
     method: "POST", headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ password, question, image: img, explain, noGroq })
+    body: JSON.stringify({ password, question, image: img, explain, noGroq, search })
   });
   try{
     let r = await send();
@@ -159,18 +160,18 @@ async function ask(question, img, explain, noGroq = false){
             text += ev.choices?.[0]?.delta?.content || "";               // Groq
             text = text.replace(/<think>[\s\S]*?(<\/think>|$)/g, "");
             text = clean(text);
-            if (text) out.textContent = explain ? text : "⚡ חושב ובודק את עצמו...";
+            if (text) out.textContent = (explain || search) ? text : "⚡ חושב ובודק את עצמו...";
           }catch{}
         }
       }
       // מצב "תשובה": המודל פותר בשקט, ומציגים רק את השורה האחרונה של "תשובה:"
-      if (!explain && text){
+      if (!explain && !search && text){
         const m = text.match(/תשובה\s*:\s*([\s\S]+)$/);
         if (m) text = m[1].trim();
       }
       out.textContent = text; lastText = text;
       // בדיקת איכות: אם נכנסו אותיות של שפה זרה (רוסית, ערבית, סינית, יפנית, קוריאנית), מבקשים מחדש מ-Gemini
-      if (!noGroq && /[\u0400-\u04FF\u0600-\u06FF\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/.test(text)){
+      if (!noGroq && !search && /[\u0400-\u04FF\u0600-\u06FF\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/.test(text)){
         btns.forEach(b => b.disabled = false);
         out.textContent = "🔄 התשובה הכילה שפה זרה, מבקש תשובה נקייה...";
         return ask(question, img, explain, true);
@@ -191,6 +192,11 @@ async function ask(question, img, explain, noGroq = false){
 
 $("askBtn").onclick = () => ask($("q").value.trim(), image, false);
 $("explainBtn").onclick = () => ask($("q").value.trim(), image, true);
+$("searchBtn").onclick = () => {
+  const q = $("q").value.trim();
+  if (!q){ $("ansCard").classList.remove("hidden"); $("ans").textContent = "✍️ כתוב קודם מה לחפש"; return; }
+  ask(q, null, false, false, true);
+};
 $("moreBtn").onclick = () => last && ask(last.question, last.image, true);
 $("copyBtn").onclick = () => navigator.clipboard?.writeText(lastText || $("ans").textContent);
 $("q").onkeydown = e => { if (e.key === "Enter" && e.ctrlKey) $("askBtn").click(); };
