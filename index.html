@@ -78,17 +78,17 @@ const store = {
   get(k, d){ try{ return JSON.parse(localStorage.getItem(k)) ?? d }catch{ return d } },
   set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)) }catch{} }
 };
-let password = store.get("pw", "");
+try{ localStorage.removeItem("pw") }catch{}
+let password = "";
 let image = null, last = null;
 
 function showMain(){ $("loginCard").classList.add("hidden"); $("main").classList.remove("hidden"); renderHist(); $("q").focus(); }
-if (password) showMain();
 
 $("loginBtn").onclick = async () => {
   const pw = $("pw").value; $("loginBtn").disabled = true;
   try{
     const r = await fetch("/.netlify/functions/ask", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ password: pw, check: true }) });
-    if (r.ok){ password = pw; store.set("pw", pw); showMain(); }
+    if (r.ok){ password = pw; showMain(); }
     else { $("pw").value = ""; $("pw").placeholder = "❌ סיסמה שגויה, נסה שוב"; }
   }catch{ $("pw").placeholder = "❌ אין חיבור לשרת"; }
   $("loginBtn").disabled = false;
@@ -120,7 +120,7 @@ async function ask(question, img, explain){
       body: JSON.stringify({ password, question, image: img, explain })
     });
     const j = await r.json();
-    if (r.status === 401){ store.set("pw",""); location.reload(); return; }
+    if (r.status === 401){ location.reload(); return; }
     $("ans").textContent = j.answer || ("❌ " + j.error);
     if (j.answer){
       last = { question, image: img };
