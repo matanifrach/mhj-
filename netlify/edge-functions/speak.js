@@ -35,7 +35,9 @@ async function candidates(key, kind) {
       "gemini-2.5-pro-preview-tts", "gemini-2.5-flash-preview-tts"];
   } else if (kind === "smart") {
     // ניקוד חכם: רק המודל הראשי שכבר עובד אצלך (כמו ב"מתן לומד"), עם קצת חשיבה
-    list = [env("GEMINI_SMART_MODEL"), env("GEMINI_MODEL"), "gemini-3.8-flash"];
+    list = [env("GEMINI_SMART_MODEL"), env("GEMINI_MODEL"), "gemini-3.8-flash",
+      ...listCache.filter((n) => /flash|pro/i.test(n) && !/image|tts|audio|live|embed|omni|exp/i.test(n))
+        .sort((a, b) => (/lite/.test(a) - /lite/.test(b)) || (/preview/.test(a) - /preview/.test(b)) || num(a, b))];
   } else {
     // מודלים "רגילים" קודם, omni/preview בסוף (לרוב בלי מכסה חינמית)
     const bad = (n) => /omni|preview|exp/i.test(n);
@@ -69,7 +71,10 @@ async function tryModels(key, kind, body, stream = false) {
     let r = await call(thinkFor(model, body));
     // אם המודל לא מכיר הגדרה (חשיבה/seed) - מנסים שוב בלעדיה
     if (r.status === 400 && (body.generationConfig?.thinking || body.generationConfig?.opt)) r = await call(thinkFor(null, body));
+    // עומס זמני אצל גוגל (503/500) - ניסיון חוזר אחד אחרי שנייה
+    if (r.status >= 500) { await new Promise((ok) => setTimeout(ok, 1000)); r = await call(thinkFor(model, body)); }
     if (r.ok) { good[kind] = model; return { r, model }; }
+    if (r.status >= 500) { errs.push(`${model}: עומס`); continue; }
     errs.push(`${model}: ${r.status === 429 ? "נגמרה המכסה" : r.status === 404 ? "לא זמין" : r.status ? (await errText(r)).slice(0, 70) : r.timeout ? "איטי מדי" : "אין חיבור"}`);
   }
   return { error: errs.join(" | ") || "אין מודל זמין" };
@@ -87,6 +92,47 @@ const errText = async (r) => {
   const j = await r.json().catch(() => ({}));
   return (j.error?.message || `שגיאה ${r.status}`).split("\n")[0].slice(0, 160);
 };
+
+// ---- ניקוד בלי Gemini ----
+const sseOf = (text, model) => new Response(
+  `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text }] } }] })}\n\n`,
+  { headers: { "content-type": "text/event-stream", "x-model": model } });
+const hasNikud = (t) => /[\u05B0-\u05BC\u05C1\u05C2]/.test(t);
+
+// הנקדן של דיקטה - כלי ייעודי לניקוד עברית (מהיר). אם לא עונה תוך 7 שנ' - ממשיכים הלאה
+async function dicta(text) {
+  const url = (Netlify.env.get("DICTA_URL") || "https://nakdan-5-3.loadbalancer.dicta.org.il/api").trim();
+  const r = await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ task: "nakdan", data: text, genre: "modern", addmorph: false, keepqq: false, keepmetagim: true }),
+    signal: AbortSignal.timeout(7000),
+  }).catch(() => null);
+  if (!r?.ok) return null;
+  const j = await r.json().catch(() => null);
+  const arr = Array.isArray(j) ? j : j?.data;
+  if (!Array.isArray(arr)) return null;
+  const out = arr.map((w) => {
+    if (w.sep || !w.options?.length) return w.word ?? "";
+    const o = w.options[0];
+    return String(Array.isArray(o) ? o[0] : (o?.w ?? o)).replace(/\|/g, "");
+  }).join("");
+  return hasNikud(out) ? out : null;
+}
+
+// Groq (גיבוי אחרון, מהיר מאוד)
+async function groq(text) {
+  const key = (Netlify.env.get("GROQ_API_KEY") || "").trim();
+  if (!key) return null;
+  const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({ model: Netlify.env.get("GROQ_MODEL") || "llama-3.3-70b-versatile", temperature: 0, seed: 7,
+      messages: [{ role: "system", content: NIKUD_PROMPT }, { role: "user", content: text }] }),
+    signal: AbortSignal.timeout(15000),
+  }).catch(() => null);
+  if (!r?.ok) return null;
+  const out = ((await r.json()).choices?.[0]?.message?.content || "").trim();
+  return hasNikud(out) ? out : null;
+}
 
 // הסיסמה לא נשמרת בשום מקום כטקסט: ב-Netlify נשמר רק TTS_PASSWORD_HASH (PBKDF2-SHA256, 210,000 סבבים).
 // את ה-hash מייצרים בדף עצמו: tts.html#hash
@@ -117,12 +163,20 @@ export default async (req) => {
   if (!clean) return json({ error: "אין טקסט" }, 400);
 
   if (action === "nikud") {
+    if (Netlify.env.get("DICTA_OFF") !== "1") {
+      const d = await dicta(clean);
+      if (d) return sseOf(d, "dicta");
+    }
     const { r, model, error } = await tryModels(key, smart ? "smart" : "text", {
       systemInstruction: { parts: [{ text: NIKUD_PROMPT }] },
       contents: [{ role: "user", parts: [{ text: clean }] }],
       generationConfig: { temperature: 0, thinking: true, opt: { seed: 7 } },
     }, true);
-    if (error) return json({ error: `ניקוד נכשל (${error})` }, 502);
+    if (error) {
+      const g = await groq(clean);
+      if (g) return sseOf(g, "groq");
+      return json({ error: `ניקוד נכשל (${error})` }, 502);
+    }
     // מזרימים את הניקוד ישר לדפדפן - רואים אותו נכתב מיד, ואין ניתוק אחרי 40 שנ'
     return new Response(r.body, { headers: { "content-type": "text/event-stream", "x-model": model } });
   }

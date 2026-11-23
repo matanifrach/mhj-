@@ -258,7 +258,10 @@ async function speak() {
     const raw = $("#txt").value.trim();
     let text = raw;
     if (nikFor === raw && $("#nik").value.trim()) text = $("#nik").value.trim();
-    else if ($("#auto").checked) text = await nikud();
+    else if ($("#auto").checked) {
+      // אם הניקוד נכשל - לא נתקעים: מקריאים בלי ניקוד
+      try { text = await nikud(); } catch (e) { text = raw; setStatus("הניקוד לא זמין כרגע, מקריא בלי ניקוד..."); }
+    }
     if (!text) throw new Error("כתוב קודם טקסט 🙂");
     setStatus("מייצר קול... 🎙️");
     const ck = voice + "|" + text;
