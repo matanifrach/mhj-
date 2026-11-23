@@ -70,6 +70,11 @@
   <h1>קוֹלִי</h1>
   <form id="lf"><input type="password" id="pw" placeholder="סיסמה" autocomplete="current-password"><button class="btn">כניסה</button></form>
   <div id="lerr" class="status err"></div>
+  <div id="hashBox" class="hidden" style="margin-top:14px">
+    <div class="status">מצב יצירת hash: כתוב את הסיסמה החדשה ולחץ. החישוב נעשה רק בטלפון שלך.</div>
+    <button class="btn" id="mkHash" type="button" style="margin-top:10px">צור hash</button>
+    <textarea id="hashOut" readonly style="min-height:70px;margin-top:10px;font-size:.85rem;direction:ltr"></textarea>
+  </div>
 </div>
 
 <div class="app hidden" id="main">
@@ -78,7 +83,7 @@
   <div class="card">
     <label class="t" for="txt">✍️ הטקסט שלך</label>
     <textarea id="txt" placeholder="כתוב כאן משהו... למשל: הספר של הספר נמצא על השולחן"></textarea>
-    <div class="meta"><span id="cnt">0 / 4000</span><span>Ctrl+Enter להקראה</span></div>
+    <div class="meta"><span id="cnt">0 / 20000</span><span>Ctrl+Enter להקראה</span></div>
   </div>
 
   <div class="card">
@@ -86,13 +91,6 @@
     <div class="voices">
       <div class="voice on" data-v="Kore"><div class="av" style="background:linear-gradient(135deg,var(--c),var(--a))">👩</div><div><b>נועה</b><small>קול נשי, ברור וחם</small></div></div>
       <div class="voice" data-v="Charon"><div class="av" style="background:linear-gradient(135deg,var(--b),var(--a))">👨</div><div><b>איתי</b><small>קול גברי, עמוק ורגוע</small></div></div>
-    </div>
-    <label class="t" style="margin-top:16px">🎭 סגנון</label>
-    <div class="chips" id="styles">
-      <button class="chip on" data-s="calm">😌 רגוע</button>
-      <button class="chip" data-s="happy">🤩 שמח</button>
-      <button class="chip" data-s="story">📖 סיפור</button>
-      <button class="chip" data-s="news">📰 חדשות</button>
     </div>
   </div>
 
@@ -117,7 +115,8 @@
 
 <script>
 const $ = (s) => document.querySelector(s);
-let password = "", voice = "Kore", style = "calm", nikFor = "", audioEl, wavUrl, ctx, analyser, raf;
+const MAX = 20000;
+let password = "", voice = "Kore", nikFor = "", audioEl, wavUrl, ctx, analyser, raf;
 
 async function api(body) {
   const r = await fetch("/api/speak", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password, ...body }) });
@@ -126,31 +125,61 @@ async function api(body) {
   return j;
 }
 
+// הסיסמה נשמרת רק בזיכרון של הדף - כל רענון דורש אותה מחדש
 $("#lf").onsubmit = async (e) => {
-  e.preventDefault(); password = $("#pw").value;
-  try { await api({ action: "check" }); localStorage.setItem("koli_pw", password); show(); }
-  catch (err) { $("#lerr").textContent = err.message; }
+  e.preventDefault(); password = $("#pw").value; $("#pw").value = "";
+  try { await api({ action: "check" }); show(); }
+  catch (err) { password = ""; $("#lerr").textContent = err.message; }
 };
 function show() { $("#login").classList.add("hidden"); $("#main").classList.remove("hidden"); $("#txt").focus(); }
-try { const s = localStorage.getItem("koli_pw"); if (s) { password = s; api({ action: "check" }).then(show).catch(() => {}); } } catch {}
+
+// tts.html#hash - יצירת hash לסיסמה חדשה (אותו חישוב כמו בשרת)
+if (location.hash === "#hash") {
+  $("#hashBox").classList.remove("hidden");
+  $("#mkHash").onclick = async () => {
+    const pw = $("#pw").value; if (!pw) return;
+    const k = await crypto.subtle.importKey("raw", new TextEncoder().encode(pw), "PBKDF2", false, ["deriveBits"]);
+    const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: new TextEncoder().encode("koli-tts-v1"), iterations: 210000 }, k, 256);
+    $("#hashOut").value = [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  };
+}
 
 document.querySelectorAll(".voice").forEach((el) => el.onclick = () => {
   document.querySelectorAll(".voice").forEach((x) => x.classList.remove("on")); el.classList.add("on"); voice = el.dataset.v;
 });
-document.querySelectorAll(".chip").forEach((el) => el.onclick = () => {
-  document.querySelectorAll(".chip").forEach((x) => x.classList.remove("on")); el.classList.add("on"); style = el.dataset.s;
-});
-$("#txt").oninput = () => { $("#cnt").textContent = `${$("#txt").value.length} / 4000`; };
-$("#txt").maxLength = 4000;
+$("#txt").maxLength = MAX;
+$("#txt").oninput = () => { $("#cnt").textContent = `${$("#txt").value.length} / ${MAX}`; };
 $("#txt").onkeydown = (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) speak(); };
 
 const setStatus = (t, err) => { $("#status").textContent = t; $("#status").classList.toggle("err", !!err); };
+
+// מחלק טקסט ארוך לקטעים לפי סופי משפטים, כדי שכל בקשה תהיה קצרה ומהירה
+function chunks(text, size) {
+  const parts = text.match(/[^.!?\n]+[.!?\n]*|[.!?\n]+/g) || [text];
+  const out = []; let cur = "";
+  for (const p of parts) {
+    if ((cur + p).length > size && cur) { out.push(cur); cur = ""; }
+    if (p.length > size) { for (let i = 0; i < p.length; i += size) out.push(p.slice(i, i + size)); continue; }
+    cur += p;
+  }
+  if (cur.trim()) out.push(cur);
+  return out.filter((c) => c.trim());
+}
+// מריץ במקביל, עד n בקשות בבת אחת, ושומר על הסדר
+async function pool(items, n, fn) {
+  const res = new Array(items.length); let i = 0, done = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (i < items.length) { const k = i++; res[k] = await fn(items[k]); setStatus(`עובד... ${++done}/${items.length}`); }
+  }));
+  return res;
+}
 
 async function nikud() {
   const t = $("#txt").value.trim();
   if (!t) throw new Error("כתוב קודם טקסט 🙂");
   setStatus("מנקד את הטקסט... ✨");
-  const { text } = await api({ action: "nikud", text: t });
+  const parts = await pool(chunks(t, 600), 4, (c) => api({ action: "nikud", text: c }).then((j) => j.text));
+  const text = parts.join(" ").replace(/ +\n/g, "\n");
   $("#nik").value = text; nikFor = t; $("#nikBox").classList.remove("hidden");
   return text;
 }
@@ -158,8 +187,8 @@ $("#doNik").onclick = async () => { busy(true); try { await nikud(); setStatus("
 
 function busy(on) { $("#play").classList.toggle("busy", on); $("#play").disabled = on; $("#doNik").disabled = on; }
 
-function pcmToWav(b64, rate) {
-  const pcm = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+function pcmToWav(pcm, rate) {
   const buf = new ArrayBuffer(44 + pcm.length), v = new DataView(buf);
   const w = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
   w(0, "RIFF"); v.setUint32(4, 36 + pcm.length, true); w(8, "WAVE"); w(12, "fmt ");
@@ -175,15 +204,17 @@ async function speak() {
   try {
     const raw = $("#txt").value.trim();
     let text = raw;
-    if ($("#auto").checked) text = (nikFor === raw && $("#nik").value.trim()) ? $("#nik").value.trim() : await nikud();
+    if (nikFor === raw && $("#nik").value.trim()) text = $("#nik").value.trim();
+    else if ($("#auto").checked) text = await nikud();
     if (!text) throw new Error("כתוב קודם טקסט 🙂");
     setStatus("מייצר קול... 🎙️");
-    const { audio, mime } = await api({ action: "tts", text, voice, style });
-    let blob;
-    if (/wav|mpeg|mp3|ogg/i.test(mime || "")) blob = new Blob([Uint8Array.from(atob(audio), (c) => c.charCodeAt(0))], { type: mime });
-    else blob = pcmToWav(audio, +((mime || "").match(/rate=(\d+)/)?.[1] || 24000));
+    const res = await pool(chunks(text, 1500), 3, (c) => api({ action: "tts", text: c, voice }));
+    const rate = +((res[0].mime || "").match(/rate=(\d+)/)?.[1] || 24000);
+    const pcms = res.map((r) => b64(r.audio));
+    const all = new Uint8Array(pcms.reduce((n, p) => n + p.length, 0));
+    let o = 0; for (const p of pcms) { all.set(p, o); o += p.length; }
     if (wavUrl) URL.revokeObjectURL(wavUrl);
-    wavUrl = URL.createObjectURL(blob);
+    wavUrl = URL.createObjectURL(pcmToWav(all, rate));
     play(wavUrl);
     $("#dl").disabled = false;
   } catch (e) { setStatus(e.message, true); }

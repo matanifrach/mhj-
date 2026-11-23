@@ -12,6 +12,7 @@ const NIKUD_PROMPT =
   "החזר רק את הטקסט המנוקד, בלי הסברים.";
 
 let listCache;
+const good = {};
 async function candidates(key, kind) {
   if (!listCache) {
     const r = await fetch(`${API}?pageSize=200`, {
@@ -35,18 +36,30 @@ async function candidates(key, kind) {
     const bad = (n) => /omni|preview|exp/i.test(n);
     list = [env("GEMINI_NIKUD_MODEL"), env("GEMINI_MODEL"),
       ...listCache.filter((n) => /flash/i.test(n) && !/image|tts|audio|live|embed/i.test(n))
-        .sort((a, b) => (bad(a) - bad(b)) || (/lite/.test(a) - /lite/.test(b)) || num(a, b)),
+        .sort((a, b) => (bad(a) - bad(b)) || (/lite/.test(b) - /lite/.test(a)) || num(a, b)),
       "gemini-2.5-flash"];
   }
-  return [...new Set(list.filter(Boolean))].slice(0, 6);
+  // המודל שהצליח בפעם הקודמת - ראשון בתור (חוסך ניסיונות כושלים)
+  return [...new Set([good[kind], ...list].filter(Boolean))].slice(0, 6);
+}
+
+// ניקוד לא צריך "לחשוב" - כיבוי החשיבה מקצר מאוד את זמן התגובה
+function thinkFor(model, body) {
+  const { thinking, ...gc } = body.generationConfig || {};
+  if (thinking && model) {
+    gc.thinkingConfig = /2\.5/.test(model) ? { thinkingBudget: /pro/.test(model) ? 128 : 0 } : { thinkingLevel: "minimal" };
+  }
+  return { ...body, generationConfig: gc };
 }
 
 // מנסה מודל אחרי מודל עד שאחד מצליח (למשל כשנגמרה המכסה החינמית של אחד מהם)
 async function tryModels(key, kind, body) {
   let last = "אין מודל זמין";
   for (const model of await candidates(key, kind)) {
-    const r = await gemini(key, model, body).catch(() => null);
-    if (r?.ok) return { r, model };
+    let r = await gemini(key, model, thinkFor(model, body)).catch(() => null);
+    // אם המודל לא מכיר את הגדרת החשיבה - מנסים שוב בלעדיה
+    if (r?.status === 400 && body.generationConfig?.thinking) r = await gemini(key, model, thinkFor(null, body)).catch(() => null);
+    if (r?.ok) { good[kind] = model; return { r, model }; }
     last = r ? `${model}: ${r.status === 429 ? "נגמרה המכסה החינמית" : await errText(r)}` : `${model}: אין חיבור`;
   }
   return { error: last };
@@ -65,22 +78,39 @@ const errText = async (r) => {
   return (j.error?.message || `שגיאה ${r.status}`).split("\n")[0].slice(0, 160);
 };
 
+// הסיסמה לא נשמרת בשום מקום כטקסט: ב-Netlify נשמר רק TTS_PASSWORD_HASH (PBKDF2-SHA256, 210,000 סבבים).
+// את ה-hash מייצרים בדף עצמו: tts.html#hash
+const SALT = "koli-tts-v1";
+async function hash(pw) {
+  const k = await crypto.subtle.importKey("raw", new TextEncoder().encode(pw), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", hash: "SHA-256", salt: new TextEncoder().encode(SALT), iterations: 210000 }, k, 256);
+  return [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function passOk(pw) {
+  const want = (Netlify.env.get("TTS_PASSWORD_HASH") || "").trim().toLowerCase();
+  if (!want || typeof pw !== "string" || !pw) return false;
+  const got = await hash(pw);
+  let d = got.length ^ want.length;
+  for (let i = 0; i < Math.min(got.length, want.length); i++) d |= got.charCodeAt(i) ^ want.charCodeAt(i);
+  return d === 0;
+}
+
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
-  const { password, action, text, voice, style } = await req.json().catch(() => ({}));
-  const pass = Netlify.env.get("APP_PASSWORD");
-  if (!pass || password !== pass) return json({ error: "סיסמה שגויה" }, 401);
+  const { password, action, text, voice } = await req.json().catch(() => ({}));
+  if (!(await passOk(password))) return json({ error: "סיסמה שגויה" }, 401);
   if (action === "check") return json({ ok: true });
   const key = (Netlify.env.get("GEMINI_API_KEY") || "").trim();
   if (!key) return json({ error: "חסר GEMINI_API_KEY ב-Netlify" }, 500);
-  const clean = String(text || "").trim().slice(0, 4000);
+  const clean = String(text || "").trim().slice(0, 6000);
   if (!clean) return json({ error: "אין טקסט" }, 400);
 
   if (action === "nikud") {
     const { r, model, error } = await tryModels(key, "text", {
       systemInstruction: { parts: [{ text: NIKUD_PROMPT }] },
       contents: [{ role: "user", parts: [{ text: clean }] }],
-      generationConfig: { temperature: 0 },
+      generationConfig: { temperature: 0, thinking: true },
     });
     if (error) return json({ error: `ניקוד נכשל (${error})` }, 502);
     const out = ((await r.json()).candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
@@ -88,15 +118,8 @@ export default async (req) => {
   }
 
   if (action === "tts") {
-    const styles = {
-      calm: "בקול רגוע, חם וברור",
-      happy: "בקול שמח ומלא אנרגיה",
-      story: "כמו מספר סיפורים, עם הבעה והפסקות טבעיות",
-      news: "כמו קריין חדשות, ברור ומקצועי",
-    };
-    const prompt = `הקרא בעברית ${styles[style] || styles.calm}, בדיוק לפי הניקוד ובהטעמה נכונה:\n${clean}`;
     const { r, model, error } = await tryModels(key, "tts", {
-      contents: [{ parts: [{ text: prompt }] }],
+      contents: [{ parts: [{ text: clean }] }], // רק הטקסט עצמו, בלי הוראות שיוקראו בקול
       generationConfig: {
         responseModalities: ["AUDIO"],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice || "Kore" } } },
