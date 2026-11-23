@@ -113,7 +113,7 @@
     <canvas id="viz" width="700" height="70"></canvas>
     <div class="status" id="status">מוכן להקראה 🎧</div>
     <div class="row"><button class="ghost" id="dl" disabled>⬇️ הורד WAV</button><button class="ghost" id="stop" disabled>⏹ עצור</button></div>
-    <div class="status" style="font-size:.7rem;opacity:.5">גרסה 7</div>
+    <div class="status" style="font-size:.7rem;opacity:.5">גרסה 8</div>
   </div>
 </div>
 
@@ -152,6 +152,11 @@ if (location.hash === "#hash") {
 document.querySelectorAll(".voice").forEach((el) => el.onclick = () => {
   document.querySelectorAll(".voice").forEach((x) => x.classList.remove("on")); el.classList.add("on"); voice = el.dataset.v;
 });
+$("#more").onchange = () => {
+  if (!$("#more").value) return;
+  voice = $("#more").value; document.querySelectorAll(".voice").forEach((x) => x.classList.remove("on"));
+};
+document.querySelectorAll(".voice").forEach((el) => el.addEventListener("click", () => { $("#more").value = ""; }));
 $("#txt").maxLength = MAX;
 $("#txt").oninput = () => { $("#cnt").textContent = `${$("#txt").value.length} / ${MAX}`; };
 $("#txt").onkeydown = (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) speak(); };

@@ -52,8 +52,9 @@ async function candidates(key, kind) {
 
 // ניקוד לא צריך "לחשוב" - כיבוי החשיבה מקצר מאוד את זמן התגובה
 function thinkFor(model, body) {
-  const { thinking, opt, ...gc } = body.generationConfig || {};
+  const { thinking, opt, heb, ...gc } = body.generationConfig || {};
   if (opt && model) Object.assign(gc, opt);
+  if (heb && model) gc.speechConfig = { ...gc.speechConfig, languageCode: "he-IL" };
   if (thinking && model) {
     const low = thinking === "low";
     gc.thinkingConfig = /2\.5/.test(model) ? { thinkingBudget: /pro/.test(model) ? 128 : low ? 512 : 0 } : { thinkingLevel: low ? "low" : "minimal" };
@@ -70,7 +71,7 @@ async function tryModels(key, kind, body, stream = false) {
     const call = (b) => gemini(key, model, b, stream ? 120000 : Math.min(left, 30000), stream).catch((e) => ({ ok: false, status: 0, timeout: e?.name === "TimeoutError" }));
     let r = await call(thinkFor(model, body));
     // אם המודל לא מכיר הגדרה (חשיבה/seed) - מנסים שוב בלעדיה
-    if (r.status === 400 && (body.generationConfig?.thinking || body.generationConfig?.opt)) r = await call(thinkFor(null, body));
+    if (r.status === 400 && (body.generationConfig?.thinking || body.generationConfig?.opt || body.generationConfig?.heb)) r = await call(thinkFor(null, body));
     // עומס זמני אצל גוגל (503/500) - ניסיון חוזר אחד אחרי שנייה
     if (r.status >= 500) { await new Promise((ok) => setTimeout(ok, 1000)); r = await call(thinkFor(model, body)); }
     if (r.ok) { good[kind] = model; return { r, model }; }
@@ -187,6 +188,7 @@ export default async (req) => {
       generationConfig: {
         responseModalities: ["AUDIO"],
         opt: { temperature: 0.3, seed: 7 }, // יציבות: אותו טקסט -> אותה הגייה
+        heb: true, // languageCode he-IL - מבטא עברי ישראלי (אם המודל לא מכיר, נשלח בלי)
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice || "Kore" } } },
       },
     });
