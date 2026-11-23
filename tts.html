@@ -113,6 +113,7 @@
     <canvas id="viz" width="700" height="70"></canvas>
     <div class="status" id="status">מוכן להקראה 🎧</div>
     <div class="row"><button class="ghost" id="dl" disabled>⬇️ הורד WAV</button><button class="ghost" id="stop" disabled>⏹ עצור</button></div>
+    <div class="status" style="font-size:.7rem;opacity:.5">גרסה 7</div>
   </div>
 </div>
 
@@ -256,7 +257,10 @@ function cleanPcm(bytes, rate) {
     let z = 0, e = 0; for (let w = t[0]; w < t[1]; w++) { z += zc[w]; e += rms[w]; }
     const sp = segs.slice(0, -1).flatMap(([s0, s1]) => rms.slice(s0, s1)).sort((x, y) => x - y);
     const med = sp[sp.length >> 1] || 0;
-    if (z / (t[1] - t[0]) > 0.12 && e / (t[1] - t[0]) > med * 0.6) segs.pop(); else break;
+    // ורק אם הוא חזק יותר מהשיא של כל הדיבור שלפניו (כמו פרץ הרעש שנמדד)
+    let tmax = 0; for (let w = t[0]; w < t[1]; w++) tmax = Math.max(tmax, rms[w]);
+    const smax = sp[sp.length - 1] || 0;
+    if (z / (t[1] - t[0]) > 0.12 && e / (t[1] - t[0]) > med * 0.6 && tmax > smax * 1.1) segs.pop(); else break;
   }
   let end = segs.length ? segs[segs.length - 1][1] : n;
   let start = 0; while (start < end && !loud[start]) start++;
