@@ -60,12 +60,12 @@ function thinkFor(model, body) {
 }
 
 // מנסה מודל אחרי מודל עד שאחד מצליח (למשל כשנגמרה המכסה החינמית של אחד מהם)
-async function tryModels(key, kind, body) {
+async function tryModels(key, kind, body, stream = false) {
   const errs = [], deadline = Date.now() + 38000; // Netlify מנתק אחרי ~40 שנ'
   for (const model of (await candidates(key, kind)).slice(0, 4)) {
     const left = deadline - Date.now();
     if (left < 3000) { errs.push("נגמר הזמן"); break; }
-    const call = (b) => gemini(key, model, b, Math.min(left, 30000)).catch((e) => ({ ok: false, status: 0, timeout: e?.name === "TimeoutError" }));
+    const call = (b) => gemini(key, model, b, stream ? 120000 : Math.min(left, 30000), stream).catch((e) => ({ ok: false, status: 0, timeout: e?.name === "TimeoutError" }));
     let r = await call(thinkFor(model, body));
     // אם המודל לא מכיר הגדרה (חשיבה/seed) - מנסים שוב בלעדיה
     if (r.status === 400 && (body.generationConfig?.thinking || body.generationConfig?.opt)) r = await call(thinkFor(null, body));
@@ -75,8 +75,8 @@ async function tryModels(key, kind, body) {
   return { error: errs.join(" | ") || "אין מודל זמין" };
 }
 
-const gemini = (key, model, body, ms = 30000) =>
-  fetch(`${API}/${model}:generateContent`, {
+const gemini = (key, model, body, ms = 30000, stream = false) =>
+  fetch(`${API}/${model}:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-goog-api-key": key },
     body: JSON.stringify(body),
@@ -120,11 +120,11 @@ export default async (req) => {
     const { r, model, error } = await tryModels(key, smart ? "smart" : "text", {
       systemInstruction: { parts: [{ text: NIKUD_PROMPT }] },
       contents: [{ role: "user", parts: [{ text: clean }] }],
-      generationConfig: smart ? { temperature: 0, thinking: "low", opt: { seed: 7 } } : { temperature: 0, thinking: true, opt: { seed: 7 } },
-    });
+      generationConfig: { temperature: 0, thinking: true, opt: { seed: 7 } },
+    }, true);
     if (error) return json({ error: `ניקוד נכשל (${error})` }, 502);
-    const out = ((await r.json()).candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
-    return json({ text: out || clean, model });
+    // מזרימים את הניקוד ישר לדפדפן - רואים אותו נכתב מיד, ואין ניתוק אחרי 40 שנ'
+    return new Response(r.body, { headers: { "content-type": "text/event-stream", "x-model": model } });
   }
 
   if (action === "tts") {

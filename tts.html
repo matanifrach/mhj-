@@ -178,20 +178,41 @@ async function pool(items, n, fn) {
   return res;
 }
 
+// מבקש ניקוד בזרם (SSE) ומעדכן את המסך תוך כדי
+async function nikudStream(text, smart, onText) {
+  const r = await fetch("/api/speak", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password, action: "nikud", text, smart }) });
+  if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || r.status); }
+  const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "", out = "";
+  for (;;) {
+    const { done, value } = await rd.read(); if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i; while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+      if (!line.startsWith("data:")) continue;
+      try { for (const p of JSON.parse(line.slice(5)).candidates?.[0]?.content?.parts || []) if (!p.thought) out += p.text || ""; } catch {}
+      onText(out);
+    }
+  }
+  return out.trim() || text;
+}
+
 async function nikud() {
   const t = $("#txt").value.trim();
   if (!t) throw new Error("כתוב קודם טקסט 🙂");
   setStatus("מנקד את הטקסט... ✨");
   const smart = $("#smart").checked;
-  // אותו טקסט באותו מצב -> אותו ניקוד בדיוק (לא מנקדים מחדש)
-  const parts = await pool(chunks(t, smart ? 900 : 600), 4, async (c) => {
+  $("#nikBox").classList.remove("hidden");
+  const cs = chunks(t, 250), live = cs.map(() => "");
+  const render = () => { $("#nik").value = live.join(" ").replace(/ +\n/g, "\n"); };
+  // קטעים קטנים במקביל = הרבה יותר מהיר. אותו טקסט באותו מצב -> אותו ניקוד (מהזיכרון)
+  await pool(cs.map((c, i) => [c, i]), 6, async ([c, i]) => {
     const k = smart + "|" + c;
-    if (!nikCache.has(k)) nikCache.set(k, (await api({ action: "nikud", text: c, smart })).text);
-    return nikCache.get(k);
+    if (!nikCache.has(k)) nikCache.set(k, await nikudStream(c, smart, (x) => { live[i] = x; render(); }));
+    live[i] = nikCache.get(k); render();
   });
-  const text = parts.join(" ").replace(/ +\n/g, "\n");
-  $("#nik").value = text; nikFor = t; $("#nikBox").classList.remove("hidden");
-  return text;
+  nikFor = t;
+  return $("#nik").value;
 }
 $("#doNik").onclick = async () => { busy(true); try { await nikud(); setStatus("נוקד! אפשר לתקן ולהקריא 👌"); } catch (e) { setStatus(e.message, true); } busy(false); };
 
