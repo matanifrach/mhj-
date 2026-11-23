@@ -11,24 +11,45 @@ const NIKUD_PROMPT =
   "אל תשנה אף מילה, אל תוסיף ואל תמחק דבר, שמור על פיסוק, מספרים ושורות. " +
   "החזר רק את הטקסט המנוקד, בלי הסברים.";
 
-let ttsCache, textCache;
-async function pick(key, kind) {
-  if (kind === "tts" && ttsCache) return ttsCache;
-  if (kind === "text" && textCache) return textCache;
-  const r = await fetch(`${API}?pageSize=200`, {
-    headers: { "x-goog-api-key": key }, signal: AbortSignal.timeout(4000),
-  }).catch(() => null);
-  if (!r?.ok) return null;
-  const names = ((await r.json()).models || [])
-    .filter((m) => (m.supportedGenerationMethods || []).includes("generateContent"))
-    .map((m) => m.name.replace("models/", ""));
-  const num = (a, b) => b.localeCompare(a, "en", { numeric: true });
-  if (kind === "tts") {
-    const t = names.filter((n) => /tts/i.test(n)).sort((a, b) => (/pro/.test(a) - /pro/.test(b)) || num(a, b));
-    return (ttsCache = t[0] || null);
+let listCache;
+async function candidates(key, kind) {
+  if (!listCache) {
+    const r = await fetch(`${API}?pageSize=200`, {
+      headers: { "x-goog-api-key": key }, signal: AbortSignal.timeout(4000),
+    }).catch(() => null);
+    listCache = r?.ok
+      ? ((await r.json()).models || [])
+          .filter((m) => (m.supportedGenerationMethods || []).includes("generateContent"))
+          .map((m) => m.name.replace("models/", ""))
+      : [];
   }
-  const t = names.filter((n) => /flash/i.test(n) && !/image|tts|audio|live|embed|lite|exp/i.test(n)).sort(num);
-  return (textCache = t[0] || null);
+  const num = (a, b) => b.localeCompare(a, "en", { numeric: true });
+  const env = (n) => (Netlify.env.get(n) || "").trim();
+  let list;
+  if (kind === "tts") {
+    list = [env("GEMINI_TTS_MODEL"),
+      ...listCache.filter((n) => /tts/i.test(n)).sort((a, b) => (/pro/.test(a) - /pro/.test(b)) || num(a, b)),
+      "gemini-2.5-flash-preview-tts"];
+  } else {
+    // מודלים "רגילים" קודם, omni/preview בסוף (לרוב בלי מכסה חינמית)
+    const bad = (n) => /omni|preview|exp/i.test(n);
+    list = [env("GEMINI_NIKUD_MODEL"), env("GEMINI_MODEL"),
+      ...listCache.filter((n) => /flash/i.test(n) && !/image|tts|audio|live|embed/i.test(n))
+        .sort((a, b) => (bad(a) - bad(b)) || (/lite/.test(a) - /lite/.test(b)) || num(a, b)),
+      "gemini-2.5-flash"];
+  }
+  return [...new Set(list.filter(Boolean))].slice(0, 6);
+}
+
+// מנסה מודל אחרי מודל עד שאחד מצליח (למשל כשנגמרה המכסה החינמית של אחד מהם)
+async function tryModels(key, kind, body) {
+  let last = "אין מודל זמין";
+  for (const model of await candidates(key, kind)) {
+    const r = await gemini(key, model, body).catch(() => null);
+    if (r?.ok) return { r, model };
+    last = r ? `${model}: ${r.status === 429 ? "נגמרה המכסה החינמית" : await errText(r)}` : `${model}: אין חיבור`;
+  }
+  return { error: last };
 }
 
 const gemini = (key, model, body) =>
@@ -41,7 +62,7 @@ const gemini = (key, model, body) =>
 
 const errText = async (r) => {
   const j = await r.json().catch(() => ({}));
-  return j.error?.message || `שגיאה ${r.status}`;
+  return (j.error?.message || `שגיאה ${r.status}`).split("\n")[0].slice(0, 160);
 };
 
 export default async (req) => {
@@ -56,19 +77,17 @@ export default async (req) => {
   if (!clean) return json({ error: "אין טקסט" }, 400);
 
   if (action === "nikud") {
-    const model = Netlify.env.get("GEMINI_NIKUD_MODEL") || (await pick(key, "text")) || "gemini-2.5-flash";
-    const r = await gemini(key, model, {
+    const { r, model, error } = await tryModels(key, "text", {
       systemInstruction: { parts: [{ text: NIKUD_PROMPT }] },
       contents: [{ role: "user", parts: [{ text: clean }] }],
       generationConfig: { temperature: 0 },
     });
-    if (!r.ok) return json({ error: `ניקוד נכשל: ${await errText(r)}` }, 502);
+    if (error) return json({ error: `ניקוד נכשל (${error})` }, 502);
     const out = ((await r.json()).candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
     return json({ text: out || clean, model });
   }
 
   if (action === "tts") {
-    const model = Netlify.env.get("GEMINI_TTS_MODEL") || (await pick(key, "tts")) || "gemini-2.5-flash-preview-tts";
     const styles = {
       calm: "בקול רגוע, חם וברור",
       happy: "בקול שמח ומלא אנרגיה",
@@ -76,14 +95,14 @@ export default async (req) => {
       news: "כמו קריין חדשות, ברור ומקצועי",
     };
     const prompt = `הקרא בעברית ${styles[style] || styles.calm}, בדיוק לפי הניקוד ובהטעמה נכונה:\n${clean}`;
-    const r = await gemini(key, model, {
+    const { r, model, error } = await tryModels(key, "tts", {
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: {
         responseModalities: ["AUDIO"],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice || "Kore" } } },
       },
     });
-    if (!r.ok) return json({ error: `הקראה נכשלה: ${await errText(r)}` }, 502);
+    if (error) return json({ error: `הקראה נכשלה (${error})` }, 502);
     const part = ((await r.json()).candidates?.[0]?.content?.parts || []).find((p) => p.inlineData);
     if (!part) return json({ error: "לא התקבל אודיו" }, 502);
     return json({ audio: part.inlineData.data, mime: part.inlineData.mimeType, model });
