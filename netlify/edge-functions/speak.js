@@ -6,10 +6,12 @@ const json = (o, status = 200) =>
 const API = "https://generativelanguage.googleapis.com/v1beta/models";
 
 const NIKUD_PROMPT =
-  "אתה מנקד מומחה לעברית. הוסף ניקוד מלא ומדויק לטקסט הבא, לפי ההקשר של המשפט " +
-  "(למשל להבחין בין סֵפֶר לסַפָּר, בין אָהַב לאֹהֵב), כולל דגש, שווא ושין/שׂין. " +
-  "אל תשנה אף מילה, אל תוסיף ואל תמחק דבר, שמור על פיסוק, מספרים ושורות. " +
-  "החזר רק את הטקסט המנוקד, בלי הסברים.";
+  "אתה מנקד מומחה לעברית מודרנית, ברמה של עורך לשון. קרא קודם את כל הטקסט והבן את המשמעות, מי הדובר ולמי הוא פונה " +
+  "(זכר/נקבה, יחיד/רבים), ורק אז נקד כל מילה לפי ההקשר: למשל סֵפֶר/סַפָּר/סִפֵּר, אָהַב/אוֹהֵב, אַתְּ/אַתָּה, " +
+  "שמות פרטיים ושמות מקומות כפי שהם נהגים בישראל, ומילים לועזיות כפי שאומרים אותן בעברית מדוברת. " +
+  "נקד ניקוד מלא: דגש, שווא נע ונח, חטפים, שִׁין/שִׂין, ומפיק. " +
+  "מספרים כתוב במילים מנוקדות, כפי שאומרים אותם בהקשר (כולל זכר/נקבה). " +
+  "מלבד זה אל תשנה, אל תוסיף ואל תמחק אף מילה, ושמור על פיסוק ושורות. החזר רק את הטקסט המנוקד.";
 
 let listCache;
 const good = {};
@@ -29,8 +31,15 @@ async function candidates(key, kind) {
   let list;
   if (kind === "tts") {
     list = [env("GEMINI_TTS_MODEL"),
-      ...listCache.filter((n) => /tts/i.test(n)).sort((a, b) => (/pro/.test(a) - /pro/.test(b)) || num(a, b)),
-      "gemini-2.5-flash-preview-tts"];
+      ...listCache.filter((n) => /tts/i.test(n)).sort((a, b) => (/pro/.test(b) - /pro/.test(a)) || num(a, b)),
+      "gemini-2.5-pro-preview-tts", "gemini-2.5-flash-preview-tts"];
+  } else if (kind === "smart") {
+    // ניקוד חכם: מודלים חזקים (לא lite), עם חשיבה
+    const bad = (n) => /omni|exp/i.test(n);
+    list = [env("GEMINI_SMART_MODEL"),
+      ...listCache.filter((n) => /flash|pro/i.test(n) && !/lite|image|tts|audio|live|embed/i.test(n))
+        .sort((a, b) => (bad(a) - bad(b)) || (/flash/.test(b) - /flash/.test(a)) || (/preview/.test(a) - /preview/.test(b)) || num(a, b)),
+      "gemini-2.5-flash", "gemini-2.5-pro"];
   } else {
     // מודלים "רגילים" קודם, omni/preview בסוף (לרוב בלי מכסה חינמית)
     const bad = (n) => /omni|preview|exp/i.test(n);
@@ -45,7 +54,8 @@ async function candidates(key, kind) {
 
 // ניקוד לא צריך "לחשוב" - כיבוי החשיבה מקצר מאוד את זמן התגובה
 function thinkFor(model, body) {
-  const { thinking, ...gc } = body.generationConfig || {};
+  const { thinking, opt, ...gc } = body.generationConfig || {};
+  if (opt && model) Object.assign(gc, opt);
   if (thinking && model) {
     gc.thinkingConfig = /2\.5/.test(model) ? { thinkingBudget: /pro/.test(model) ? 128 : 0 } : { thinkingLevel: "minimal" };
   }
@@ -58,7 +68,7 @@ async function tryModels(key, kind, body) {
   for (const model of await candidates(key, kind)) {
     let r = await gemini(key, model, thinkFor(model, body)).catch(() => null);
     // אם המודל לא מכיר את הגדרת החשיבה - מנסים שוב בלעדיה
-    if (r?.status === 400 && body.generationConfig?.thinking) r = await gemini(key, model, thinkFor(null, body)).catch(() => null);
+    if (r?.status === 400 && (body.generationConfig?.thinking || body.generationConfig?.opt)) r = await gemini(key, model, thinkFor(null, body)).catch(() => null);
     if (r?.ok) { good[kind] = model; return { r, model }; }
     last = r ? `${model}: ${r.status === 429 ? "נגמרה המכסה החינמית" : await errText(r)}` : `${model}: אין חיבור`;
   }
@@ -98,7 +108,7 @@ async function passOk(pw) {
 
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
-  const { password, action, text, voice } = await req.json().catch(() => ({}));
+  const { password, action, text, voice, smart } = await req.json().catch(() => ({}));
   if (!(await passOk(password))) return json({ error: "סיסמה שגויה" }, 401);
   if (action === "check") return json({ ok: true });
   const key = (Netlify.env.get("GEMINI_API_KEY") || "").trim();
@@ -107,10 +117,10 @@ export default async (req) => {
   if (!clean) return json({ error: "אין טקסט" }, 400);
 
   if (action === "nikud") {
-    const { r, model, error } = await tryModels(key, "text", {
+    const { r, model, error } = await tryModels(key, smart ? "smart" : "text", {
       systemInstruction: { parts: [{ text: NIKUD_PROMPT }] },
       contents: [{ role: "user", parts: [{ text: clean }] }],
-      generationConfig: { temperature: 0, thinking: true },
+      generationConfig: smart ? { temperature: 0, opt: { seed: 7 } } : { temperature: 0, thinking: true, opt: { seed: 7 } },
     });
     if (error) return json({ error: `ניקוד נכשל (${error})` }, 502);
     const out = ((await r.json()).candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
@@ -122,6 +132,7 @@ export default async (req) => {
       contents: [{ parts: [{ text: clean }] }], // רק הטקסט עצמו, בלי הוראות שיוקראו בקול
       generationConfig: {
         responseModalities: ["AUDIO"],
+        opt: { temperature: 0.3, seed: 7 }, // יציבות: אותו טקסט -> אותה הגייה
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice || "Kore" } } },
       },
     });

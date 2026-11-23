@@ -90,13 +90,16 @@
     <label class="t">🎙️ בחר קול</label>
     <div class="voices">
       <div class="voice on" data-v="Kore"><div class="av" style="background:linear-gradient(135deg,var(--c),var(--a))">👩</div><div><b>נועה</b><small>קול נשי, ברור וחם</small></div></div>
+      <div class="voice" data-v="Aoede"><div class="av" style="background:linear-gradient(135deg,#fbbf24,var(--c))">👱‍♀️</div><div><b>מאיה</b><small>קול נשי, קליל וזורם</small></div></div>
       <div class="voice" data-v="Charon"><div class="av" style="background:linear-gradient(135deg,var(--b),var(--a))">👨</div><div><b>איתי</b><small>קול גברי, עמוק ורגוע</small></div></div>
+      <div class="voice" data-v="Puck"><div class="av" style="background:linear-gradient(135deg,#34d399,var(--b))">🧑</div><div><b>עומר</b><small>קול גברי, צעיר ואנרגטי</small></div></div>
     </div>
   </div>
 
   <div class="card">
     <div class="row" style="justify-content:space-between">
       <label class="switch"><input type="checkbox" id="auto" checked><span></span>ניקוד אוטומטי לפני הקראה</label>
+      <label class="switch"><input type="checkbox" id="smart" checked><span></span>🧠 ניקוד חכם (מבין הקשר, קצת יותר איטי)</label>
       <button class="ghost" id="doNik">✨ נקד עכשיו</button>
     </div>
     <div id="nikBox" class="hidden" style="margin-top:12px">
@@ -116,6 +119,7 @@
 <script>
 const $ = (s) => document.querySelector(s);
 const MAX = 20000;
+const nikCache = new Map(), audioCache = new Map();
 let password = "", voice = "Kore", nikFor = "", audioEl, wavUrl, ctx, analyser, raf;
 
 async function api(body) {
@@ -178,7 +182,13 @@ async function nikud() {
   const t = $("#txt").value.trim();
   if (!t) throw new Error("כתוב קודם טקסט 🙂");
   setStatus("מנקד את הטקסט... ✨");
-  const parts = await pool(chunks(t, 600), 4, (c) => api({ action: "nikud", text: c }).then((j) => j.text));
+  const smart = $("#smart").checked;
+  // אותו טקסט באותו מצב -> אותו ניקוד בדיוק (לא מנקדים מחדש)
+  const parts = await pool(chunks(t, smart ? 900 : 600), 4, async (c) => {
+    const k = smart + "|" + c;
+    if (!nikCache.has(k)) nikCache.set(k, (await api({ action: "nikud", text: c, smart })).text);
+    return nikCache.get(k);
+  });
   const text = parts.join(" ").replace(/ +\n/g, "\n");
   $("#nik").value = text; nikFor = t; $("#nikBox").classList.remove("hidden");
   return text;
@@ -198,6 +208,25 @@ function pcmToWav(pcm, rate) {
   return new Blob([buf], { type: "audio/wav" });
 }
 
+// מנקה את סוף ההקראה: חותך רעש/צליל מוזר שמגיע אחרי שהדיבור נגמר, שקט מיותר, ומוסיף fade קצר
+function cleanPcm(bytes, rate) {
+  const a = new Int16Array(bytes.buffer, bytes.byteOffset, bytes.length >> 1);
+  const win = Math.round(rate * 0.02), n = Math.floor(a.length / win), thr = 600;
+  const loud = new Array(n);
+  for (let w = 0; w < n; w++) { let e = 0; for (let i = w * win; i < (w + 1) * win; i++) e += a[i] * a[i]; loud[w] = Math.sqrt(e / win) > thr; }
+  let end = n; while (end > 0 && !loud[end - 1]) end--;          // שקט בסוף
+  // אם בסוף יש קטע קצר (<0.7 שנ') שבא אחרי שקט ארוך (>0.35 שנ') - זה רעש, לא דיבור
+  let w = end - 1, tail = 0; while (w >= 0 && loud[w]) { w--; tail++; }
+  let sil = 0; while (w >= 0 && !loud[w]) { w--; sil++; }
+  if (w >= 0 && tail * 0.02 < 0.7 && sil * 0.02 > 0.35) end = w + 1;
+  let start = 0; while (start < end && !loud[start]) start++;
+  const pad = Math.round(rate * 0.06);
+  const out = a.slice(Math.max(0, start * win - pad), Math.min(a.length, end * win + pad));
+  const f = Math.min(Math.round(rate * 0.02), out.length >> 1);
+  for (let i = 0; i < f; i++) { out[i] = out[i] * i / f; out[out.length - 1 - i] = out[out.length - 1 - i] * i / f; }
+  return out;
+}
+
 async function speak() {
   if (audioEl && !audioEl.paused) return stop();
   busy(true);
@@ -208,13 +237,17 @@ async function speak() {
     else if ($("#auto").checked) text = await nikud();
     if (!text) throw new Error("כתוב קודם טקסט 🙂");
     setStatus("מייצר קול... 🎙️");
-    const res = await pool(chunks(text, 1500), 3, (c) => api({ action: "tts", text: c, voice }));
-    const rate = +((res[0].mime || "").match(/rate=(\d+)/)?.[1] || 24000);
-    const pcms = res.map((r) => b64(r.audio));
-    const all = new Uint8Array(pcms.reduce((n, p) => n + p.length, 0));
-    let o = 0; for (const p of pcms) { all.set(p, o); o += p.length; }
-    if (wavUrl) URL.revokeObjectURL(wavUrl);
-    wavUrl = URL.createObjectURL(pcmToWav(all, rate));
+    const ck = voice + "|" + text;
+    if (!audioCache.has(ck)) {
+      const res = await pool(chunks(text, 1500), 3, (c) => api({ action: "tts", text: c, voice }));
+      const rate = +((res[0].mime || "").match(/rate=(\d+)/)?.[1] || 24000);
+      const gap = new Int16Array(Math.round(rate * 0.25));
+      const pcms = res.flatMap((r, i) => [...(i ? [gap] : []), cleanPcm(b64(r.audio), rate)]);
+      const all = new Int16Array(pcms.reduce((n, p) => n + p.length, 0));
+      let o = 0; for (const p of pcms) { all.set(p, o); o += p.length; }
+      audioCache.set(ck, URL.createObjectURL(pcmToWav(new Uint8Array(all.buffer), rate)));
+    }
+    wavUrl = audioCache.get(ck);
     play(wavUrl);
     $("#dl").disabled = false;
   } catch (e) { setStatus(e.message, true); }
