@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>קוֹלִי - מקריא עברית</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;600;800&family=Frank+Ruhl+Libre:wght@500&display=swap" rel="stylesheet">
+<style>
+  :root{--bg:#07060f;--glass:#ffffff0d;--line:#ffffff1f;--text:#f2f0ff;--muted:#a19cc7;--a:#8b5cf6;--b:#22d3ee;--c:#f472b6}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-family:Rubik,system-ui,sans-serif;overflow-x:hidden}
+  .bg{position:fixed;inset:0;z-index:-1;overflow:hidden}
+  .bg i{position:absolute;width:520px;height:520px;border-radius:50%;filter:blur(110px);opacity:.45;animation:float 18s ease-in-out infinite}
+  .bg i:nth-child(1){background:var(--a);top:-160px;right:-120px}
+  .bg i:nth-child(2){background:var(--b);bottom:-200px;left:-140px;animation-delay:-6s}
+  .bg i:nth-child(3){background:var(--c);top:40%;left:40%;width:340px;height:340px;opacity:.25;animation-delay:-12s}
+  @keyframes float{50%{transform:translate(60px,-40px) scale(1.15)}}
+  .app{max-width:780px;margin:0 auto;padding:28px 16px 60px}
+  header{text-align:center;margin-bottom:22px}
+  h1{margin:0;font-size:clamp(2.4rem,8vw,3.6rem);font-weight:800;letter-spacing:-1px;
+     background:linear-gradient(90deg,var(--b),var(--a),var(--c));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{color:var(--muted);margin-top:4px}
+  .card{background:var(--glass);border:1px solid var(--line);border-radius:22px;padding:18px;margin-bottom:14px;backdrop-filter:blur(18px)}
+  label.t{display:block;font-weight:600;margin-bottom:10px;color:var(--muted);font-size:.9rem}
+  textarea{width:100%;min-height:150px;background:#0000004d;border:1px solid var(--line);color:var(--text);border-radius:16px;
+     padding:14px;font:1.15rem/1.8 Rubik,sans-serif;resize:vertical;outline:none;transition:.2s}
+  textarea:focus{border-color:var(--a);box-shadow:0 0 0 4px #8b5cf633}
+  #nik{font-family:"Frank Ruhl Libre",serif;font-size:1.35rem;line-height:2.1;min-height:110px}
+  .meta{display:flex;justify-content:space-between;color:var(--muted);font-size:.8rem;margin-top:6px}
+  .voices{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .voice{cursor:pointer;border:1px solid var(--line);border-radius:18px;padding:14px;display:flex;gap:12px;align-items:center;transition:.25s;background:#0000002e}
+  .voice:hover{transform:translateY(-2px)}
+  .voice.on{border-color:transparent;background:linear-gradient(#120f24,#120f24) padding-box,linear-gradient(120deg,var(--b),var(--a),var(--c)) border-box;box-shadow:0 8px 30px #8b5cf640}
+  .av{width:46px;height:46px;border-radius:50%;display:grid;place-items:center;font-size:1.5rem;flex:none}
+  .voice b{display:block}.voice small{color:var(--muted)}
+  .chips{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{border:1px solid var(--line);background:transparent;color:var(--text);border-radius:999px;padding:8px 14px;font:inherit;cursor:pointer;transition:.2s}
+  .chip.on{background:var(--a);border-color:var(--a)}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .switch{display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
+  .switch input{display:none}
+  .switch span{width:46px;height:26px;border-radius:99px;background:#ffffff26;position:relative;transition:.2s}
+  .switch span::after{content:"";position:absolute;top:3px;right:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:.2s}
+  .switch input:checked+span{background:var(--a)}
+  .switch input:checked+span::after{right:23px}
+  .stage{display:flex;flex-direction:column;align-items:center;gap:16px;padding:26px 18px}
+  .orb{position:relative;width:150px;height:150px;border:0;border-radius:50%;cursor:pointer;color:#fff;font-size:2.6rem;
+       background:radial-gradient(circle at 30% 30%,#fff6,transparent 40%),conic-gradient(from 0deg,var(--b),var(--a),var(--c),var(--b));
+       box-shadow:0 0 60px #8b5cf699,inset 0 0 30px #0006;transition:transform .15s}
+  .orb:active{transform:scale(.95)}
+  .orb.busy{animation:spin 1.4s linear infinite}
+  @keyframes spin{to{filter:hue-rotate(360deg);transform:rotate(360deg)}}
+  canvas{width:100%;height:70px}
+  .status{color:var(--muted);min-height:1.4em;text-align:center}
+  .status.err{color:#fb7185}
+  .ghost{border:1px solid var(--line);background:transparent;color:var(--text);border-radius:12px;padding:9px 14px;font:inherit;cursor:pointer}
+  .ghost:disabled{opacity:.4;cursor:default}
+  .hidden{display:none!important}
+  #login{max-width:380px;margin:12vh auto 0;text-align:center}
+  #login input{width:100%;margin:14px 0;background:#0000004d;border:1px solid var(--line);color:var(--text);border-radius:14px;padding:13px;font:inherit;text-align:center}
+  .btn{border:0;border-radius:14px;padding:12px 22px;font:inherit;font-weight:600;color:#fff;cursor:pointer;background:linear-gradient(90deg,var(--a),var(--c))}
+  @media(max-width:520px){.voices{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="bg"><i></i><i></i><i></i></div>
+
+<div id="login" class="card">
+  <h1>קוֹלִי</h1>
+  <form id="lf"><input type="password" id="pw" placeholder="סיסמה" autocomplete="current-password"><button class="btn">כניסה</button></form>
+  <div id="lerr" class="status err"></div>
+</div>
+
+<div class="app hidden" id="main">
+  <header><h1>קוֹלִי</h1><div class="sub">כותבים בעברית, והוא מקריא עם ניקוד והגייה נכונים</div></header>
+
+  <div class="card">
+    <label class="t" for="txt">✍️ הטקסט שלך</label>
+    <textarea id="txt" placeholder="כתוב כאן משהו... למשל: הספר של הספר נמצא על השולחן"></textarea>
+    <div class="meta"><span id="cnt">0 / 4000</span><span>Ctrl+Enter להקראה</span></div>
+  </div>
+
+  <div class="card">
+    <label class="t">🎙️ בחר קול</label>
+    <div class="voices">
+      <div class="voice on" data-v="Kore"><div class="av" style="background:linear-gradient(135deg,var(--c),var(--a))">👩</div><div><b>נועה</b><small>קול נשי, ברור וחם</small></div></div>
+      <div class="voice" data-v="Charon"><div class="av" style="background:linear-gradient(135deg,var(--b),var(--a))">👨</div><div><b>איתי</b><small>קול גברי, עמוק ורגוע</small></div></div>
+    </div>
+    <label class="t" style="margin-top:16px">🎭 סגנון</label>
+    <div class="chips" id="styles">
+      <button class="chip on" data-s="calm">😌 רגוע</button>
+      <button class="chip" data-s="happy">🤩 שמח</button>
+      <button class="chip" data-s="story">📖 סיפור</button>
+      <button class="chip" data-s="news">📰 חדשות</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <label class="switch"><input type="checkbox" id="auto" checked><span></span>ניקוד אוטומטי לפני הקראה</label>
+      <button class="ghost" id="doNik">✨ נקד עכשיו</button>
+    </div>
+    <div id="nikBox" class="hidden" style="margin-top:12px">
+      <label class="t" for="nik">הטקסט המנוקד (אפשר לתקן ידנית, וזה מה שיוקרא)</label>
+      <textarea id="nik"></textarea>
+    </div>
+  </div>
+
+  <div class="card stage">
+    <button class="orb" id="play" title="הקרא">▶</button>
+    <canvas id="viz" width="700" height="70"></canvas>
+    <div class="status" id="status">מוכן להקראה 🎧</div>
+    <div class="row"><button class="ghost" id="dl" disabled>⬇️ הורד WAV</button><button class="ghost" id="stop" disabled>⏹ עצור</button></div>
+  </div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let password = "", voice = "Kore", style = "calm", nikFor = "", audioEl, wavUrl, ctx, analyser, raf;
+
+async function api(body) {
+  const r = await fetch("/api/speak", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password, ...body }) });
+  const j = await r.json().catch(() => ({ error: "תשובה לא תקינה מהשרת" }));
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+
+$("#lf").onsubmit = async (e) => {
+  e.preventDefault(); password = $("#pw").value;
+  try { await api({ action: "check" }); localStorage.setItem("koli_pw", password); show(); }
+  catch (err) { $("#lerr").textContent = err.message; }
+};
+function show() { $("#login").classList.add("hidden"); $("#main").classList.remove("hidden"); $("#txt").focus(); }
+try { const s = localStorage.getItem("koli_pw"); if (s) { password = s; api({ action: "check" }).then(show).catch(() => {}); } } catch {}
+
+document.querySelectorAll(".voice").forEach((el) => el.onclick = () => {
+  document.querySelectorAll(".voice").forEach((x) => x.classList.remove("on")); el.classList.add("on"); voice = el.dataset.v;
+});
+document.querySelectorAll(".chip").forEach((el) => el.onclick = () => {
+  document.querySelectorAll(".chip").forEach((x) => x.classList.remove("on")); el.classList.add("on"); style = el.dataset.s;
+});
+$("#txt").oninput = () => { $("#cnt").textContent = `${$("#txt").value.length} / 4000`; };
+$("#txt").maxLength = 4000;
+$("#txt").onkeydown = (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) speak(); };
+
+const setStatus = (t, err) => { $("#status").textContent = t; $("#status").classList.toggle("err", !!err); };
+
+async function nikud() {
+  const t = $("#txt").value.trim();
+  if (!t) throw new Error("כתוב קודם טקסט 🙂");
+  setStatus("מנקד את הטקסט... ✨");
+  const { text } = await api({ action: "nikud", text: t });
+  $("#nik").value = text; nikFor = t; $("#nikBox").classList.remove("hidden");
+  return text;
+}
+$("#doNik").onclick = async () => { busy(true); try { await nikud(); setStatus("נוקד! אפשר לתקן ולהקריא 👌"); } catch (e) { setStatus(e.message, true); } busy(false); };
+
+function busy(on) { $("#play").classList.toggle("busy", on); $("#play").disabled = on; $("#doNik").disabled = on; }
+
+function pcmToWav(b64, rate) {
+  const pcm = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const buf = new ArrayBuffer(44 + pcm.length), v = new DataView(buf);
+  const w = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  w(0, "RIFF"); v.setUint32(4, 36 + pcm.length, true); w(8, "WAVE"); w(12, "fmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  w(36, "data"); v.setUint32(40, pcm.length, true); new Uint8Array(buf, 44).set(pcm);
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+async function speak() {
+  if (audioEl && !audioEl.paused) return stop();
+  busy(true);
+  try {
+    const raw = $("#txt").value.trim();
+    let text = raw;
+    if ($("#auto").checked) text = (nikFor === raw && $("#nik").value.trim()) ? $("#nik").value.trim() : await nikud();
+    if (!text) throw new Error("כתוב קודם טקסט 🙂");
+    setStatus("מייצר קול... 🎙️");
+    const { audio, mime } = await api({ action: "tts", text, voice, style });
+    let blob;
+    if (/wav|mpeg|mp3|ogg/i.test(mime || "")) blob = new Blob([Uint8Array.from(atob(audio), (c) => c.charCodeAt(0))], { type: mime });
+    else blob = pcmToWav(audio, +((mime || "").match(/rate=(\d+)/)?.[1] || 24000));
+    if (wavUrl) URL.revokeObjectURL(wavUrl);
+    wavUrl = URL.createObjectURL(blob);
+    play(wavUrl);
+    $("#dl").disabled = false;
+  } catch (e) { setStatus(e.message, true); }
+  busy(false);
+}
+
+function play(url) {
+  if (!audioEl) {
+    audioEl = new Audio(); audioEl.onended = () => { setStatus("סיים 🎉"); $("#play").textContent = "▶"; $("#stop").disabled = true; };
+    try {
+      ctx = new AudioContext(); analyser = ctx.createAnalyser(); analyser.fftSize = 128;
+      ctx.createMediaElementSource(audioEl).connect(analyser); analyser.connect(ctx.destination);
+    } catch {}
+  }
+  ctx?.resume(); audioEl.src = url; audioEl.play();
+  setStatus("מקריא... 🔊"); $("#play").textContent = "⏸"; $("#stop").disabled = false; draw();
+}
+function stop() { audioEl?.pause(); if (audioEl) audioEl.currentTime = 0; $("#play").textContent = "▶"; $("#stop").disabled = true; setStatus("נעצר"); }
+
+function draw() {
+  cancelAnimationFrame(raf);
+  const c = $("#viz"), g = c.getContext("2d");
+  const data = new Uint8Array(analyser ? analyser.frequencyBinCount : 64);
+  const grad = g.createLinearGradient(0, 0, c.width, 0);
+  grad.addColorStop(0, "#22d3ee"); grad.addColorStop(.5, "#8b5cf6"); grad.addColorStop(1, "#f472b6");
+  (function loop() {
+    g.clearRect(0, 0, c.width, c.height);
+    if (analyser) analyser.getByteFrequencyData(data);
+    const n = data.length, bw = c.width / n;
+    for (let i = 0; i < n; i++) {
+      const h = Math.max(3, (data[i] / 255) * c.height);
+      g.fillStyle = grad; g.fillRect(i * bw + 1, (c.height - h) / 2, bw - 2, h);
+    }
+    if (audioEl && !audioEl.paused) raf = requestAnimationFrame(loop);
+  })();
+}
+
+$("#play").onclick = speak;
+$("#stop").onclick = stop;
+$("#dl").onclick = () => { const a = document.createElement("a"); a.href = wavUrl; a.download = "koli.wav"; a.click(); };
+draw();
+</script>
+</body>
+</html>
