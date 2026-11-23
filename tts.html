@@ -237,11 +237,19 @@ function cleanPcm(bytes, rate) {
   const thr = Math.max(500, peak * 0.06); // סף יחסי לעוצמת ההקלטה
   const loud = new Array(n);
   for (let w = 0; w < n; w++) { let e = 0; for (let i = w * win; i < (w + 1) * win; i++) e += a[i] * a[i]; loud[w] = Math.sqrt(e / win) > thr; }
-  let end = n; while (end > 0 && !loud[end - 1]) end--;          // שקט בסוף
-  // אם בסוף יש קטע קצר (<0.7 שנ') שבא אחרי שקט ארוך (>0.35 שנ') - זה רעש, לא דיבור
-  let w = end - 1, tail = 0; while (w >= 0 && loud[w]) { w--; tail++; }
-  let sil = 0; while (w >= 0 && !loud[w]) { w--; sil++; }
-  if (w >= 0 && tail * 0.02 < 1.2 && sil * 0.02 > 0.2) end = w + 1;
+  // מקבצים "קטעי קול" (מאחדים הפסקות קצרות מ-0.08 שנ' בתוך אותו קטע)
+  const segs = [];
+  for (let w = 0; w < n; w++) {
+    if (!loud[w]) continue;
+    const last = segs[segs.length - 1];
+    if (last && w - last[1] <= 4) last[1] = w + 1; else segs.push([w, w + 1]);
+  }
+  // רעש בסוף = קטע קצר (עד 0.6 שנ') שמגיע אחרי שקט של 0.2 שנ' ומעלה. מורידים עד 2 כאלה
+  for (let k = 0; k < 2 && segs.length > 1; k++) {
+    const t = segs[segs.length - 1], p = segs[segs.length - 2];
+    if ((t[1] - t[0]) * 0.02 <= 0.6 && (t[0] - p[1]) * 0.02 >= 0.2) segs.pop(); else break;
+  }
+  let end = segs.length ? segs[segs.length - 1][1] : n;
   let start = 0; while (start < end && !loud[start]) start++;
   const pad = Math.round(rate * 0.04);
   const out = a.slice(Math.max(0, start * win - pad), Math.min(a.length, end * win + pad));
