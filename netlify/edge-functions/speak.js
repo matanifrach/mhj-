@@ -34,19 +34,15 @@ async function candidates(key, kind) {
       ...listCache.filter((n) => /tts/i.test(n)).sort((a, b) => (/pro/.test(b) - /pro/.test(a)) || num(a, b)),
       "gemini-2.5-pro-preview-tts", "gemini-2.5-flash-preview-tts"];
   } else if (kind === "smart") {
-    // ניקוד חכם: מודלים חזקים (לא lite), עם חשיבה
-    const bad = (n) => /omni|exp/i.test(n);
-    list = [env("GEMINI_SMART_MODEL"),
-      ...listCache.filter((n) => /flash|pro/i.test(n) && !/lite|image|tts|audio|live|embed/i.test(n))
-        .sort((a, b) => (bad(a) - bad(b)) || (/flash/.test(b) - /flash/.test(a)) || (/preview/.test(a) - /preview/.test(b)) || num(a, b)),
-      "gemini-2.5-flash", "gemini-2.5-pro"];
+    // ניקוד חכם: רק המודל הראשי שכבר עובד אצלך (כמו ב"מתן לומד"), עם קצת חשיבה
+    list = [env("GEMINI_SMART_MODEL"), env("GEMINI_MODEL"), "gemini-3.8-flash"];
   } else {
     // מודלים "רגילים" קודם, omni/preview בסוף (לרוב בלי מכסה חינמית)
     const bad = (n) => /omni|preview|exp/i.test(n);
     list = [env("GEMINI_NIKUD_MODEL"), env("GEMINI_MODEL"),
       ...listCache.filter((n) => /flash/i.test(n) && !/image|tts|audio|live|embed/i.test(n))
         .sort((a, b) => (bad(a) - bad(b)) || (/lite/.test(b) - /lite/.test(a)) || num(a, b)),
-      "gemini-2.5-flash"];
+      "gemini-3.8-flash"];
   }
   // המודל שהצליח בפעם הקודמת - ראשון בתור (חוסך ניסיונות כושלים)
   return [...new Set([good[kind], ...list].filter(Boolean))].slice(0, 6);
@@ -57,30 +53,34 @@ function thinkFor(model, body) {
   const { thinking, opt, ...gc } = body.generationConfig || {};
   if (opt && model) Object.assign(gc, opt);
   if (thinking && model) {
-    gc.thinkingConfig = /2\.5/.test(model) ? { thinkingBudget: /pro/.test(model) ? 128 : 0 } : { thinkingLevel: "minimal" };
+    const low = thinking === "low";
+    gc.thinkingConfig = /2\.5/.test(model) ? { thinkingBudget: /pro/.test(model) ? 128 : low ? 512 : 0 } : { thinkingLevel: low ? "low" : "minimal" };
   }
   return { ...body, generationConfig: gc };
 }
 
 // מנסה מודל אחרי מודל עד שאחד מצליח (למשל כשנגמרה המכסה החינמית של אחד מהם)
 async function tryModels(key, kind, body) {
-  let last = "אין מודל זמין";
-  for (const model of await candidates(key, kind)) {
-    let r = await gemini(key, model, thinkFor(model, body)).catch(() => null);
-    // אם המודל לא מכיר את הגדרת החשיבה - מנסים שוב בלעדיה
-    if (r?.status === 400 && (body.generationConfig?.thinking || body.generationConfig?.opt)) r = await gemini(key, model, thinkFor(null, body)).catch(() => null);
-    if (r?.ok) { good[kind] = model; return { r, model }; }
-    last = r ? `${model}: ${r.status === 429 ? "נגמרה המכסה החינמית" : await errText(r)}` : `${model}: אין חיבור`;
+  const errs = [], deadline = Date.now() + 38000; // Netlify מנתק אחרי ~40 שנ'
+  for (const model of (await candidates(key, kind)).slice(0, 4)) {
+    const left = deadline - Date.now();
+    if (left < 3000) { errs.push("נגמר הזמן"); break; }
+    const call = (b) => gemini(key, model, b, Math.min(left, 30000)).catch((e) => ({ ok: false, status: 0, timeout: e?.name === "TimeoutError" }));
+    let r = await call(thinkFor(model, body));
+    // אם המודל לא מכיר הגדרה (חשיבה/seed) - מנסים שוב בלעדיה
+    if (r.status === 400 && (body.generationConfig?.thinking || body.generationConfig?.opt)) r = await call(thinkFor(null, body));
+    if (r.ok) { good[kind] = model; return { r, model }; }
+    errs.push(`${model}: ${r.status === 429 ? "נגמרה המכסה" : r.status === 404 ? "לא זמין" : r.status ? (await errText(r)).slice(0, 70) : r.timeout ? "איטי מדי" : "אין חיבור"}`);
   }
-  return { error: last };
+  return { error: errs.join(" | ") || "אין מודל זמין" };
 }
 
-const gemini = (key, model, body) =>
+const gemini = (key, model, body, ms = 30000) =>
   fetch(`${API}/${model}:generateContent`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-goog-api-key": key },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60000),
+    signal: AbortSignal.timeout(ms),
   });
 
 const errText = async (r) => {
@@ -120,7 +120,7 @@ export default async (req) => {
     const { r, model, error } = await tryModels(key, smart ? "smart" : "text", {
       systemInstruction: { parts: [{ text: NIKUD_PROMPT }] },
       contents: [{ role: "user", parts: [{ text: clean }] }],
-      generationConfig: smart ? { temperature: 0, opt: { seed: 7 } } : { temperature: 0, thinking: true, opt: { seed: 7 } },
+      generationConfig: smart ? { temperature: 0, thinking: "low", opt: { seed: 7 } } : { temperature: 0, thinking: true, opt: { seed: 7 } },
     });
     if (error) return json({ error: `ניקוד נכשל (${error})` }, 502);
     const out = ((await r.json()).candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
@@ -129,7 +129,7 @@ export default async (req) => {
 
   if (action === "tts") {
     const { r, model, error } = await tryModels(key, "tts", {
-      contents: [{ parts: [{ text: clean }] }], // רק הטקסט עצמו, בלי הוראות שיוקראו בקול
+      contents: [{ parts: [{ text: /[.!?…]$/.test(clean) ? clean : clean + "." }] }], // רק הטקסט עצמו, בלי הוראות שיוקראו בקול
       generationConfig: {
         responseModalities: ["AUDIO"],
         opt: { temperature: 0.3, seed: 7 }, // יציבות: אותו טקסט -> אותה הגייה
